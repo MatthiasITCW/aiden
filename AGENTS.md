@@ -62,3 +62,9 @@ Single-loop agent replaces planner+responder split. ONE LLM. Tools called inside
 - `AIDEN_CLI_MODE=1` set by `bin/aiden.js` auto-suppresses bracket-prefixed `console.log` when level >= warn.
 - Together-1 provider disabled (HTTP 400 cascade since v3.19.5).
 - Windows graphify hooks need patched python path (see above).
+
+## Git remotes (CRITICAL — read before pushing)
+- `origin` = public repo, FROZEN at v3.19.9 during this sprint. Never push to origin.
+- `backup` = private repo (taracodlabs/Aiden-v4), ALL v4 work pushes here.
+- `v4-rewrite` branch is configured to default-push to `backup` only.
+- Public release happens later by merging backup/v4-rewrite into origin/main as one big release.
