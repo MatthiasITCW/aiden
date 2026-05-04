@@ -129,7 +129,7 @@ describe('REPL boot — full moat active (real LLM)', () => {
       const initial = await getTestProvider();
       if (!initial) {
         console.warn(
-          'Skipping: no LLM provider available (need GROQ_API_KEY[_2/_3] or TOGETHER_API_KEY)',
+          'Skipping: no LLM provider available (need GROQ_API_KEY[_2/_3/_4] or TOGETHER_API_KEY)',
         );
         return;
       }

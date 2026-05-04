@@ -27,7 +27,7 @@ export const providers: SlashCommand = {
         );
       }
       ctx.display.dim(
-        '(fallback chain not active — set GROQ_API_KEY_2 / GROQ_API_KEY_3 / TOGETHER_API_KEY to enable)',
+        '(fallback chain not active — set GROQ_API_KEY_2 / GROQ_API_KEY_3 / GROQ_API_KEY_4 / TOGETHER_API_KEY to enable)',
       );
       return {};
     }

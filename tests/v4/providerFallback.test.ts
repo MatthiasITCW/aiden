@@ -156,7 +156,7 @@ describe('runFallbackChain', () => {
 });
 
 describe('buildDefaultSlots', () => {
-  it('builds 4 slots in groq → groq2 → groq3 → together order', () => {
+  it('builds 5 slots in groq → groq2 → groq3 → groq4 → together order', () => {
     const slots = buildDefaultSlots({
       adapterFactory: () => okStub(),
       env: {
@@ -165,11 +165,29 @@ describe('buildDefaultSlots', () => {
         TOGETHER_API_KEY: 'tk',
       },
     });
-    expect(slots.map((s) => s.id)).toEqual(['groq', 'groq2', 'groq3', 'together']);
+    expect(slots.map((s) => s.id)).toEqual([
+      'groq',
+      'groq2',
+      'groq3',
+      'groq4',
+      'together',
+    ]);
     expect(slots[0].keyPresent).toBe(true);
     expect(slots[1].keyPresent).toBe(true);
     expect(slots[2].keyPresent).toBe(false);
-    expect(slots[3].keyPresent).toBe(true);
+    expect(slots[3].keyPresent).toBe(false);
+    expect(slots[4].keyPresent).toBe(true);
+  });
+
+  it('groq4 slot picks up GROQ_API_KEY_4', () => {
+    const slots = buildDefaultSlots({
+      adapterFactory: () => okStub(),
+      env: { GROQ_API_KEY_4: 'k4-secret-tail' },
+    });
+    const groq4 = slots.find((s) => s.id === 'groq4')!;
+    expect(groq4.keyPresent).toBe(true);
+    expect(groq4.keyTail).toBe('tail');
+    expect(groq4.providerId).toBe('groq');
   });
 
   it('uses model overrides when provided', () => {
@@ -180,7 +198,9 @@ describe('buildDefaultSlots', () => {
       togetherModel: 'together-custom',
     });
     expect(slots[0].modelId).toBe('llama-custom');
-    expect(slots[3].modelId).toBe('together-custom');
+    // groq4 inherits the groqModel; together is the last slot.
+    expect(slots[3].modelId).toBe('llama-custom');
+    expect(slots[4].modelId).toBe('together-custom');
   });
 });
 

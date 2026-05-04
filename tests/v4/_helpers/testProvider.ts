@@ -9,7 +9,8 @@
  *   1. GROQ_API_KEY      — primary, free tier, fast
  *   2. GROQ_API_KEY_2    — secondary Groq account
  *   3. GROQ_API_KEY_3    — tertiary Groq account
- *   4. TOGETHER_API_KEY  — paid (~$10 sprint budget; use sparingly)
+ *   4. GROQ_API_KEY_4    — quaternary Groq account (Phase 16b.3)
+ *   5. TOGETHER_API_KEY  — paid (~$10 sprint budget; use sparingly)
  *
  * Phase 16b.1: the chain primitives (`isRateLimitError`, slot builders)
  * now live in `core/v4/providerFallback.ts` so the runtime path shares
@@ -32,7 +33,12 @@ import {
   type ProviderSlot,
 } from '../../../core/v4/providerFallback';
 
-export type TestProviderSource = 'groq' | 'groq2' | 'groq3' | 'together';
+export type TestProviderSource =
+  | 'groq'
+  | 'groq2'
+  | 'groq3'
+  | 'groq4'
+  | 'together';
 
 export interface TestProvider {
   /** Canonical provider id understood by the resolver / adapter. */

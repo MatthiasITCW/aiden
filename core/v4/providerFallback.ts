@@ -10,10 +10,10 @@
  * propagate immediately — those are real bugs, not transient quota.
  *
  * Why a separate module: 16b's smoke gate revealed Groq was rate-limiting
- * the FIRST "hi" of every session. Test infra had a 4-tier fallback (Groq
- * → Groq2 → Groq3 → Together) that made tests robust; the runtime path
- * surfaced the raw "Provider groq rate limited" to the user. This module
- * lets the runtime borrow the same chain.
+ * the FIRST "hi" of every session. Test infra had a multi-tier fallback
+ * (Groq → Groq2 → Groq3 → Groq4 → Together) that made tests robust; the
+ * runtime path surfaced the raw "Provider groq rate limited" to the user.
+ * This module lets the runtime borrow the same chain.
  *
  * Design note: this module is provider-agnostic. Slots carry an opaque
  * `id` for diagnostics (`/providers` reads it) plus a synchronous adapter
@@ -182,8 +182,9 @@ export interface DefaultSlotsOptions {
 }
 
 /**
- * Build the default 4-tier slot list:
- *   GROQ_API_KEY → GROQ_API_KEY_2 → GROQ_API_KEY_3 → TOGETHER_API_KEY
+ * Build the default 5-tier slot list:
+ *   GROQ_API_KEY → GROQ_API_KEY_2 → GROQ_API_KEY_3 → GROQ_API_KEY_4
+ *     → TOGETHER_API_KEY
  *
  * Slots without a configured key are still included (so `/providers` can
  * render them as "unset"); their `build()` returns null and the chain
@@ -236,6 +237,7 @@ export function buildDefaultSlots(opts: DefaultSlotsOptions): ProviderSlot[] {
     buildGroqSlot('groq', 'GROQ_API_KEY'),
     buildGroqSlot('groq2', 'GROQ_API_KEY_2'),
     buildGroqSlot('groq3', 'GROQ_API_KEY_3'),
+    buildGroqSlot('groq4', 'GROQ_API_KEY_4'),
     togetherSlot,
   ];
 }

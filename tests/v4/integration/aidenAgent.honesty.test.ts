@@ -50,7 +50,7 @@ describe('AidenAgent honesty layer (real LLM)', () => {
       const initial = await getTestProvider();
       if (!initial) {
         console.warn(
-          'Skipping: no LLM provider available (need GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3, or TOGETHER_API_KEY)',
+          'Skipping: no LLM provider available (need GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3, GROQ_API_KEY_4, or TOGETHER_API_KEY)',
         );
         return;
       }
