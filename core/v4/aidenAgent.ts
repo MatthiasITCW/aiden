@@ -215,6 +215,11 @@ export class AidenAgent {
     this.onCompression = options.onCompression;
   }
 
+  /** Phase 14c: hot-swap the provider adapter (used by /model). */
+  setProvider(adapter: ProviderAdapter): void {
+    this.provider = adapter;
+  }
+
   async runConversation(initialMessages: Message[]): Promise<AidenAgentResult> {
     // ── Phase 13: Build (or reuse cached) system prompt at session start ──
     let messages: Message[] = [...initialMessages];
