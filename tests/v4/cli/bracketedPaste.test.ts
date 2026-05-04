@@ -1,0 +1,90 @@
+import { describe, it, expect, vi } from 'vitest';
+import {
+  PASTE_BEGIN,
+  PASTE_END,
+  PASTE_ENABLE,
+  PASTE_DISABLE,
+  isCompletePaste,
+  stripPasteMarkers,
+  hasPasteMarkers,
+  enableBracketedPaste,
+  disableBracketedPaste,
+} from '../../../cli/v4/bracketedPaste';
+
+describe('bracketedPaste', () => {
+  it('isCompletePaste matches a full payload', () => {
+    expect(isCompletePaste(`${PASTE_BEGIN}hello world${PASTE_END}`)).toBe(true);
+  });
+
+  it('isCompletePaste tolerates trailing newlines after end marker', () => {
+    expect(isCompletePaste(`${PASTE_BEGIN}hi${PASTE_END}\r\n`)).toBe(true);
+  });
+
+  it('isCompletePaste rejects unterminated paste', () => {
+    expect(isCompletePaste(`${PASTE_BEGIN}hello`)).toBe(false);
+  });
+
+  it('isCompletePaste rejects raw input with no markers', () => {
+    expect(isCompletePaste('hello world')).toBe(false);
+  });
+
+  it('stripPasteMarkers extracts inner content from a complete paste', () => {
+    expect(stripPasteMarkers(`${PASTE_BEGIN}line 1\nline 2${PASTE_END}`)).toBe('line 1\nline 2');
+  });
+
+  it('stripPasteMarkers preserves multi-line payload exactly', () => {
+    const body = 'foo\nbar\nbaz';
+    expect(stripPasteMarkers(`${PASTE_BEGIN}${body}${PASTE_END}`)).toBe(body);
+  });
+
+  it('stripPasteMarkers tolerates trailing newlines after end marker', () => {
+    expect(stripPasteMarkers(`${PASTE_BEGIN}hi${PASTE_END}\n`)).toBe('hi');
+  });
+
+  it('stripPasteMarkers strips a stray begin marker on unterminated paste', () => {
+    expect(stripPasteMarkers(`${PASTE_BEGIN}truncated`)).toBe('truncated');
+  });
+
+  it('stripPasteMarkers is a no-op on clean input', () => {
+    expect(stripPasteMarkers('plain text')).toBe('plain text');
+  });
+
+  it('stripPasteMarkers handles empty string', () => {
+    expect(stripPasteMarkers('')).toBe('');
+  });
+
+  it('hasPasteMarkers detects markers anywhere in the string', () => {
+    expect(hasPasteMarkers('plain')).toBe(false);
+    expect(hasPasteMarkers(`prefix${PASTE_BEGIN}body`)).toBe(true);
+    expect(hasPasteMarkers(`body${PASTE_END}suffix`)).toBe(true);
+  });
+
+  it('enableBracketedPaste writes the CSI 2004h sequence', () => {
+    const writes: string[] = [];
+    const stream = { write: (s: string) => writes.push(s) } as unknown as NodeJS.WriteStream;
+    expect(enableBracketedPaste(stream)).toBe(true);
+    expect(writes).toEqual([PASTE_ENABLE]);
+  });
+
+  it('disableBracketedPaste writes the CSI 2004l sequence', () => {
+    const writes: string[] = [];
+    const stream = { write: (s: string) => writes.push(s) } as unknown as NodeJS.WriteStream;
+    expect(disableBracketedPaste(stream)).toBe(true);
+    expect(writes).toEqual([PASTE_DISABLE]);
+  });
+
+  it('enable/disable return false when stream is missing or invalid', () => {
+    expect(enableBracketedPaste(undefined)).toBe(false);
+    expect(disableBracketedPaste(undefined)).toBe(false);
+    expect(enableBracketedPaste({} as any)).toBe(false);
+  });
+
+  it('enable does not throw when stream.write throws', () => {
+    const stream = {
+      write: vi.fn(() => {
+        throw new Error('EIO');
+      }),
+    } as unknown as NodeJS.WriteStream;
+    expect(enableBracketedPaste(stream)).toBe(false);
+  });
+});

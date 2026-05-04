@@ -33,6 +33,13 @@ import type { RuntimeResolver } from '../../providers/v4/runtimeResolver';
 import type { ConfigManager } from '../../core/v4/config';
 import { ModelMetadata } from '../../core/v4/modelMetadata';
 import type { Message } from '../../providers/v4/types';
+import {
+  enableBracketedPaste,
+  disableBracketedPaste,
+  stripPasteMarkers,
+  isCompletePaste,
+  hasPasteMarkers,
+} from './bracketedPaste';
 
 /** Lightweight readline / inquirer abstraction so tests can swap in stubs. */
 export interface ChatPromptApi {
@@ -174,6 +181,14 @@ export class ChatSession implements ChatSessionLike {
     const promptApi = this.opts.promptApi ?? createDefaultPromptApi();
     const max = this.opts.maxIterations ?? Number.POSITIVE_INFINITY;
     let iter = 0;
+    // Phase 16: enable bracketed paste for the duration of the REPL when
+    // a real TTY is attached. Disabled in `finally` below so the user's
+    // shell doesn't inherit the mode after we exit.
+    const stdout = process.stdout;
+    const pasteEnabled =
+      stdout?.isTTY && !this.opts.promptApi
+        ? enableBracketedPaste(stdout)
+        : false;
     try {
       while (iter < max) {
         iter += 1;
@@ -216,6 +231,7 @@ export class ChatSession implements ChatSessionLike {
       }
     } finally {
       if (sigintHandler) process.off('SIGINT', sigintHandler);
+      if (pasteEnabled) disableBracketedPaste(stdout);
     }
   }
 
@@ -386,6 +402,19 @@ export class ChatSession implements ChatSessionLike {
 
     let raw = await api.readLine(promptText);
     if (raw == null) return '';
+
+    // Bracketed paste polish (Phase 16): if the terminal sent paste markers,
+    // strip them and accept the entire payload as one message. This replaces
+    // Phase 15's timing heuristic when the terminal supports CSI 2004; the
+    // timing fallback remains for older Console hosts that don't.
+    if (hasPasteMarkers(raw)) {
+      const stripped = stripPasteMarkers(raw).replace(/\r/g, '');
+      if (isCompletePaste(raw)) return stripped;
+      // Unterminated paste — still return the stripped content so the user
+      // doesn't see escape sequences in their prompt.
+      raw = stripped;
+    }
+
     raw = raw.replace(/\r/g, '');
 
     // Multi-line via leading """.
