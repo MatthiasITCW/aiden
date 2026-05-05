@@ -147,6 +147,20 @@ export interface ChainCooldownState {
   cooldownMs: number;
   /** Optional clock for tests. Defaults to `Date.now`. */
   now?: () => number;
+  /**
+   * Phase 16e: per-slot request counter for least-used selection. When
+   * provided, `runFallbackChain` sorts fresh (non-cooling) slots ascending
+   * by count before picking, spreading multi-call turns across slots so a
+   * burst doesn't hammer slot 0 to TPM-cap.
+   *
+   * The chain increments on every pick (success OR rate-limit) — TPM is
+   * burned the moment the request goes out, not just on success. Cooldown
+   * still kicks in on 429 as before.
+   *
+   * Mirrors Hermes `STRATEGY_LEAST_USED` (`agent/credential_pool.py:906`)
+   * but using an in-process Map instead of persisted pool state.
+   */
+  requestCount?: Map<string, number>;
 }
 
 /**
@@ -187,6 +201,25 @@ export async function runFallbackChain<T>(
     fresh.push(slot);
   }
 
+  // Phase 16e: when a request counter is provided, sort fresh slots by
+  // ascending request count (least-used first). Spreads burst-tool turns
+  // across slots so call 1 hits slot 0, call 2 hits slot 1, etc. — instead
+  // of all calls hammering slot 0 to its TPM cap. Stable sort preserves
+  // the configured slot order as the tiebreaker.
+  if (cooldown?.requestCount && fresh.length > 1) {
+    const counts = cooldown.requestCount;
+    const decorated = fresh.map((s, idx) => ({
+      slot: s,
+      count: counts.get(s.id) ?? 0,
+      idx,
+    }));
+    decorated.sort((a, b) =>
+      a.count !== b.count ? a.count - b.count : a.idx - b.idx,
+    );
+    fresh.length = 0;
+    for (const d of decorated) fresh.push(d.slot);
+  }
+
   let lastErr: Error | null = null;
   let attemptedAny = false;
 
@@ -194,6 +227,15 @@ export async function runFallbackChain<T>(
     const adapter = slot.build();
     if (!adapter) return null;
     attemptedAny = true;
+    // Phase 16e: bump the request counter the moment we commit to a slot —
+    // TPM/RPM burns whether the call succeeds or 429s, so least-used must
+    // count attempts, not just successes.
+    if (cooldown?.requestCount) {
+      cooldown.requestCount.set(
+        slot.id,
+        (cooldown.requestCount.get(slot.id) ?? 0) + 1,
+      );
+    }
     try {
       const value = await requestFn(adapter, slot);
       // Successful call clears any lingering cooldown for the slot.
@@ -378,6 +420,11 @@ export class FallbackAdapter implements ProviderAdapter {
   private readonly state: Map<string, SlotState> = new Map();
   /** Phase 16b.3: cooldown deadlines shared with `runFallbackChain`. */
   private readonly cooldownUntil: Map<string, number> = new Map();
+  /**
+   * Phase 16e: per-slot request counter for least-used selection. Spreads
+   * burst-tool-turns across slots so 4 calls in 5s don't all hit slot 0.
+   */
+  private readonly requestCount: Map<string, number> = new Map();
   private readonly cooldownMs: number;
   private readonly nowFn: () => number;
   private lastSuccessfulSlot: string | null = null;
@@ -442,6 +489,7 @@ export class FallbackAdapter implements ProviderAdapter {
         cooldownUntil: this.cooldownUntil,
         cooldownMs: this.cooldownMs,
         now: this.nowFn,
+        requestCount: this.requestCount,
       },
     );
     const s = this.state.get(result.slotId);
@@ -492,6 +540,16 @@ export class FallbackAdapter implements ProviderAdapter {
         fresh.push(slot);
       }
     }
+    // Phase 16e: same least-used sort as the non-streaming path.
+    if (fresh.length > 1) {
+      const counts = this.requestCount;
+      fresh
+        .map((s, idx) => ({ slot: s, count: counts.get(s.id) ?? 0, idx }))
+        .sort((a, b) =>
+          a.count !== b.count ? a.count - b.count : a.idx - b.idx,
+        )
+        .forEach((d, i) => (fresh[i] = d.slot));
+    }
     const ordered = [...fresh, ...cooling];
 
     let attemptedAny = false;
@@ -506,6 +564,11 @@ export class FallbackAdapter implements ProviderAdapter {
         this.onFallback?.(lastSlotTried, slot.id);
       }
       lastSlotTried = slot.id;
+      // Phase 16e: bump count on every committed pick (success or 429).
+      this.requestCount.set(
+        slot.id,
+        (this.requestCount.get(slot.id) ?? 0) + 1,
+      );
 
       // Per spec stop condition: if the slot adapter doesn't implement
       // streaming, fall back to non-streaming on this slot. Wrap the

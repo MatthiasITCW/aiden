@@ -390,6 +390,196 @@ describe('runFallbackChain cooldown skip', () => {
     // Successful retry clears 'a's cooldown.
     expect(cooldownUntil.get('a')).toBeUndefined();
   });
+});
+
+describe('Phase 16e — least-used slot selection', () => {
+  function makeSlot(
+    id: string,
+    build: () => ProviderAdapter | null,
+  ): ProviderSlot {
+    return {
+      id,
+      providerId: id,
+      modelId: 'm',
+      keyPresent: true,
+      keyTail: '1234',
+      build,
+    };
+  }
+  const okAdapter = (): ProviderAdapter => ({
+    apiMode: 'chat_completions',
+    call: async () => ({
+      content: 'ok',
+      toolCalls: [],
+      finishReason: 'stop',
+      usage: { inputTokens: 0, outputTokens: 0 },
+    }),
+  });
+
+  it('picks the slot with the lowest request count when fresh slots tie on cooldown', async () => {
+    const slots = [
+      makeSlot('a', okAdapter),
+      makeSlot('b', okAdapter),
+      makeSlot('c', okAdapter),
+    ];
+    const requestCount = new Map<string, number>([
+      ['a', 5],
+      ['b', 0],
+      ['c', 3],
+    ]);
+    const cooldown = {
+      cooldownUntil: new Map<string, number>(),
+      cooldownMs: 60_000,
+      requestCount,
+      now: () => 1_000_000,
+    };
+    const r = await runFallbackChain(
+      slots,
+      (_a, slot) => Promise.resolve({ slotId: slot.id }),
+      {},
+      cooldown,
+    );
+    expect(r.slotId).toBe('b');
+    expect(requestCount.get('b')).toBe(1); // 0 → 1 after the pick
+  });
+
+  it('increments count on rate-limit too (TPM burns regardless of success)', async () => {
+    const rlAdapter: ProviderAdapter = {
+      apiMode: 'chat_completions',
+      call: async () => {
+        throw new Error('429 rate limit');
+      },
+    };
+    const slots = [
+      makeSlot('a', () => rlAdapter),
+      makeSlot('b', okAdapter),
+    ];
+    const requestCount = new Map<string, number>();
+    const cooldown = {
+      cooldownUntil: new Map<string, number>(),
+      cooldownMs: 60_000,
+      requestCount,
+      now: () => 1_000_000,
+    };
+    await runFallbackChain(
+      slots,
+      (a) => a.call({ messages: [], tools: [] }),
+      {},
+      cooldown,
+    );
+    expect(requestCount.get('a')).toBe(1);
+    expect(requestCount.get('b')).toBe(1);
+  });
+
+  it('a 4-call burst spreads 1/1/1/1 across 4 fresh slots (vs 4/0/0/0 with fill-first)', async () => {
+    const slots = [
+      makeSlot('s1', okAdapter),
+      makeSlot('s2', okAdapter),
+      makeSlot('s3', okAdapter),
+      makeSlot('s4', okAdapter),
+    ];
+    const requestCount = new Map<string, number>();
+    const cooldown = {
+      cooldownUntil: new Map<string, number>(),
+      cooldownMs: 60_000,
+      requestCount,
+    };
+    for (let i = 0; i < 4; i++) {
+      await runFallbackChain(
+        slots,
+        (_a, slot) => Promise.resolve({ slotId: slot.id }),
+        {},
+        cooldown,
+      );
+    }
+    // Distribution must be even — that's the entire point of least_used.
+    expect(requestCount.get('s1')).toBe(1);
+    expect(requestCount.get('s2')).toBe(1);
+    expect(requestCount.get('s3')).toBe(1);
+    expect(requestCount.get('s4')).toBe(1);
+  });
+
+  it('preserves slot order as a tiebreaker when all counts are equal', async () => {
+    const slots = [
+      makeSlot('a', okAdapter),
+      makeSlot('b', okAdapter),
+    ];
+    const requestCount = new Map<string, number>([
+      ['a', 7],
+      ['b', 7],
+    ]);
+    const cooldown = {
+      cooldownUntil: new Map<string, number>(),
+      cooldownMs: 60_000,
+      requestCount,
+    };
+    const r = await runFallbackChain(
+      slots,
+      (_a, slot) => Promise.resolve({ slotId: slot.id }),
+      {},
+      cooldown,
+    );
+    // 'a' wins on configured-order tiebreaker.
+    expect(r.slotId).toBe('a');
+  });
+
+  it('FallbackAdapter spreads load across slots over multiple calls', async () => {
+    const log: string[] = [];
+    const trackingAdapter = (id: string): ProviderAdapter => ({
+      apiMode: 'chat_completions',
+      call: async () => {
+        log.push(id);
+        return {
+          content: 'ok',
+          toolCalls: [],
+          finishReason: 'stop',
+          usage: { inputTokens: 0, outputTokens: 0 },
+        };
+      },
+    });
+    const slots = [
+      makeSlot('a', () => trackingAdapter('a')),
+      makeSlot('b', () => trackingAdapter('b')),
+      makeSlot('c', () => trackingAdapter('c')),
+    ];
+    const fa = new FallbackAdapter({ apiMode: 'chat_completions', slots });
+    for (let i = 0; i < 3; i++) {
+      await fa.call({ messages: [], tools: [] });
+    }
+    // After 3 calls each slot should have been touched exactly once.
+    expect(log.sort()).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('Phase 16b.3 cooldown countdown', () => {
+  function makeSlot(
+    id: string,
+    build: () => ProviderAdapter | null,
+  ): ProviderSlot {
+    return {
+      id,
+      providerId: id,
+      modelId: 'm',
+      keyPresent: true,
+      keyTail: '1234',
+      build,
+    };
+  }
+  const okAdapter: ProviderAdapter = {
+    apiMode: 'chat_completions',
+    call: async () => ({
+      content: 'ok',
+      toolCalls: [],
+      finishReason: 'stop',
+      usage: { inputTokens: 0, outputTokens: 0 },
+    }),
+  };
+  const rl: ProviderAdapter = {
+    apiMode: 'chat_completions',
+    call: async () => {
+      throw new Error('429 too many requests');
+    },
+  };
 
   it('FallbackAdapter exposes cooldown countdown via getDiagnostics', async () => {
     let nowMs = 4_000_000;
