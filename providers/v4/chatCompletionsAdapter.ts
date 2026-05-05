@@ -29,6 +29,7 @@ import {
   ProviderAdapter,
   ProviderCallInput,
   ProviderCallOutput,
+  StreamEvent,
   ToolCallRequest,
   ToolSchema,
 } from './types';
@@ -97,6 +98,28 @@ interface OpenAIResponse {
     cache_read_input_tokens?: number;
     cache_creation_input_tokens?: number;
   };
+}
+
+/**
+ * Phase 16c: shape of a single SSE chunk on /v1/chat/completions.
+ * `delta` carries incremental content/tool_calls, `usage` only appears
+ * in the final chunk when `stream_options.include_usage=true` was set.
+ */
+interface SseChunk {
+  choices?: Array<{
+    delta?: {
+      content?: string;
+      role?: string;
+      tool_calls?: Array<{
+        index?: number;
+        id?: string;
+        function?: { name?: string; arguments?: string };
+      }>;
+    };
+    finish_reason?: string | null;
+  }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  error?: { message?: string; code?: string | number };
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -204,6 +227,71 @@ export function parseLegacyFunctionSyntax(
     finishReason: 'tool_use',
     usage: { inputTokens: 0, outputTokens: 0 },
   };
+}
+
+/**
+ * Phase 16c: parse an SSE byte stream from /v1/chat/completions into
+ * `data: <json>` payloads. Yields raw JSON-string payloads only — caller
+ * is responsible for `JSON.parse` + chunk shape validation, since
+ * providers occasionally interleave error frames or `[DONE]` sentinels.
+ *
+ * Why hand-rolled vs an SSE library: dependency-free, ~30 lines, and the
+ * v4 server already does the same thing for OpenAI-wire output. The SSE
+ * spec is trivially simple — newline-delimited `field: value` lines.
+ *
+ * Hermes reference: openai SDK's Stream() handles this internally; v4
+ * uses raw fetch so we parse the wire ourselves.
+ *
+ * Exported for unit tests.
+ */
+export async function* parseSseStream(
+  body: ReadableStream<Uint8Array>,
+): AsyncGenerator<string, void, void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl: number;
+      // Process line-by-line. Both `\n` and `\r\n` are permitted by the
+      // SSE spec; we normalise by stripping trailing `\r`.
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).replace(/\r$/, '');
+        buffer = buffer.slice(nl + 1);
+        if (line.startsWith('data: ')) {
+          const payload = line.slice(6);
+          if (payload === '[DONE]') return;
+          yield payload;
+        } else if (line.startsWith('data:')) {
+          // Some providers omit the space after the colon (per spec, valid).
+          const payload = line.slice(5);
+          if (payload === '[DONE]') return;
+          yield payload;
+        }
+        // Comment lines (`: ping`) and blank line dividers are ignored.
+      }
+    }
+    // Flush any trailing data after the last newline (rare — most servers
+    // terminate with a blank line + `[DONE]`).
+    const tail = buffer.replace(/\r$/, '');
+    if (tail.startsWith('data: ')) {
+      const payload = tail.slice(6);
+      if (payload !== '[DONE]') yield payload;
+    } else if (tail.startsWith('data:')) {
+      const payload = tail.slice(5);
+      if (payload !== '[DONE]') yield payload;
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // releaseLock throws if the reader is already in a pending read state;
+      // safe to swallow during teardown.
+    }
+  }
 }
 
 export class ChatCompletionsAdapter implements ProviderAdapter {
@@ -330,6 +418,268 @@ export class ChatCompletionsAdapter implements ProviderAdapter {
       `Provider ${this.providerName} exhausted retries`,
       this.providerName,
     );
+  }
+
+  /**
+   * Phase 16c: streaming variant of `call`. Yields `delta` events as
+   * tokens arrive, `tool_call` events when each tool's name first
+   * appears in the SSE stream, and exactly one `done` event at the end
+   * with a fully assembled `ProviderCallOutput`.
+   *
+   * Mirrors Hermes `_call_chat_completions` (run_agent.py:6753):
+   *   - text deltas only stream while no tool calls have been seen this turn
+   *   - tool_calls are accumulated by index; partial JSON arguments are
+   *     concatenated until the SSE stream ends, then validated with
+   *     JSON.parse
+   *   - the final assistant message mirrors what `call()` would have
+   *     returned, so the agent loop can reuse its existing tool-call
+   *     dispatch logic verbatim
+   *
+   * Failures: on any 4xx/5xx response we throw before yielding anything
+   * (same shape as `call`); on a mid-stream network drop we surface a
+   * `ProviderError(retryable:true)` so `runFallbackChainStream` can
+   * advance to the next slot. Per Phase 16c spec we DO NOT silent-retry
+   * with a duplicated preamble — that's deferred to v4.1.
+   */
+  async *callStream(
+    input: ProviderCallInput,
+  ): AsyncGenerator<StreamEvent, void, void> {
+    const body = {
+      ...this.buildRequestBody(input),
+      stream: true,
+      stream_options: { include_usage: true },
+    };
+    const url = `${this.baseUrl}/chat/completions`;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${this.apiKey}`,
+      Accept: 'text/event-stream',
+      ...this.extraHeaders,
+    };
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timer);
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new ProviderTimeoutError(this.providerName, this.timeoutMs);
+      }
+      throw new ProviderError(
+        `Provider ${this.providerName} stream request failed: ${err instanceof Error ? err.message : String(err)}`,
+        this.providerName,
+        undefined,
+        err,
+        true,
+      );
+    }
+
+    if (!response.ok) {
+      clearTimeout(timer);
+      const status = response.status;
+      const rawText = await this.safeReadText(response);
+      if (status === 429) {
+        throw new ProviderRateLimitError(this.providerName, rawText);
+      }
+      const retryable = status >= 500;
+      throw new ProviderError(
+        `Provider ${this.providerName} returned ${status}: ${rawText.slice(0, 500)}`,
+        this.providerName,
+        status,
+        rawText,
+        retryable,
+      );
+    }
+
+    const responseBody = response.body;
+    if (!responseBody) {
+      clearTimeout(timer);
+      throw new ProviderError(
+        `Provider ${this.providerName} returned an empty stream body`,
+        this.providerName,
+      );
+    }
+
+    // Accumulators mirror Hermes _call_chat_completions exactly.
+    const contentParts: string[] = [];
+    const toolCallsAcc = new Map<
+      number,
+      { id: string; name: string; argumentsBuf: string }
+    >();
+    const toolGenNotified = new Set<number>();
+    let finishReason: string | null = null;
+    let usage: { prompt_tokens?: number; completion_tokens?: number } | null = null;
+    let toolCallSeen = false;
+
+    try {
+      for await (const payload of parseSseStream(responseBody)) {
+        let chunk: SseChunk;
+        try {
+          chunk = JSON.parse(payload) as SseChunk;
+        } catch {
+          // Some providers emit empty keep-alive lines; skip silently.
+          continue;
+        }
+
+        // Provider-error frames (OpenRouter SSE: {"error":{"message":"..."}}
+        // and Groq's tool_use_failed which arrives mid-stream when the
+        // model emits `<function=name(...)>` legacy syntax instead of
+        // tool_calls.) Match the non-streaming legacy-recovery path so
+        // a streaming turn doesn't fail where a non-streaming turn would
+        // recover.
+        if (chunk.error) {
+          const recovered = tryRecoverLegacyToolCall(JSON.stringify({ error: chunk.error }));
+          if (recovered) {
+            for (const tc of recovered.toolCalls) {
+              yield { type: 'tool_call', toolCall: tc };
+            }
+            yield { type: 'done', output: recovered };
+            clearTimeout(timer);
+            return;
+          }
+          throw new ProviderError(
+            `Provider ${this.providerName} stream error: ${chunk.error.message ?? 'unknown'}`,
+            this.providerName,
+            undefined,
+            chunk.error,
+            true,
+          );
+        }
+
+        if (chunk.usage) usage = chunk.usage;
+
+        const choice = chunk.choices?.[0];
+        if (!choice) continue;
+
+        const delta = choice.delta ?? {};
+        if (typeof delta.content === 'string' && delta.content.length > 0) {
+          contentParts.push(delta.content);
+          // Per Hermes line 6852: only stream deltas while no tool call
+          // has appeared in this turn. Once a tool_call event fires the
+          // visible stream goes silent; the display layer is expected to
+          // switch into "executing tool" mode.
+          if (!toolCallSeen) {
+            yield { type: 'delta', content: delta.content };
+          }
+        }
+
+        if (Array.isArray(delta.tool_calls)) {
+          for (const tcDelta of delta.tool_calls) {
+            const idx = typeof tcDelta.index === 'number' ? tcDelta.index : 0;
+            let entry = toolCallsAcc.get(idx);
+            if (!entry) {
+              entry = { id: tcDelta.id ?? '', name: '', argumentsBuf: '' };
+              toolCallsAcc.set(idx, entry);
+            }
+            if (tcDelta.id) entry.id = tcDelta.id;
+            const fn = tcDelta.function;
+            if (fn) {
+              if (typeof fn.name === 'string' && fn.name.length > 0) {
+                // Assignment, not concat — see Hermes comment at 6907.
+                entry.name = fn.name;
+              }
+              if (typeof fn.arguments === 'string') {
+                entry.argumentsBuf += fn.arguments;
+              }
+            }
+            if (entry.name && !toolGenNotified.has(idx)) {
+              toolGenNotified.add(idx);
+              toolCallSeen = true;
+              // Yield a tool_call event with empty arguments — display
+              // can show "preparing <name>…". The real arguments arrive
+              // in the final `done` event.
+              yield {
+                type: 'tool_call',
+                toolCall: {
+                  id: entry.id || `pending-${idx}`,
+                  name: entry.name,
+                  arguments: {},
+                },
+              };
+            }
+          }
+        }
+
+        if (choice.finish_reason) {
+          finishReason = choice.finish_reason;
+        }
+      }
+    } catch (err) {
+      clearTimeout(timer);
+      if (err instanceof ProviderError) throw err;
+      throw new ProviderError(
+        `Provider ${this.providerName} stream interrupted: ${err instanceof Error ? err.message : String(err)}`,
+        this.providerName,
+        undefined,
+        err,
+        true,
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+
+    // Assemble final tool calls. Mirrors `parseResponse` minus the
+    // legacy-recovery path (streaming responses don't surface that
+    // wire-format quirk — Groq returns it as a 400 before any chunk).
+    const toolCalls: ToolCallRequest[] = [];
+    for (const idx of [...toolCallsAcc.keys()].sort((a, b) => a - b)) {
+      const entry = toolCallsAcc.get(idx)!;
+      let args: Record<string, unknown> = {};
+      const buf = entry.argumentsBuf.trim();
+      if (buf.length > 0) {
+        try {
+          const parsed = JSON.parse(buf);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            args = parsed as Record<string, unknown>;
+          }
+        } catch {
+          console.warn(
+            `[${this.providerName}] failed to JSON.parse streamed tool args for ${entry.name}; falling back to {}`,
+          );
+        }
+      }
+      toolCalls.push({
+        id: entry.id || `call_${idx}_${Date.now().toString(36)}`,
+        name: entry.name || '?',
+        arguments: args,
+      });
+    }
+
+    let mappedFinish: ProviderCallOutput['finishReason'];
+    switch (finishReason) {
+      case 'stop':
+        mappedFinish = 'stop';
+        break;
+      case 'tool_calls':
+      case 'function_call':
+        mappedFinish = 'tool_use';
+        break;
+      case 'length':
+        mappedFinish = 'length';
+        break;
+      default:
+        mappedFinish = toolCalls.length > 0 ? 'tool_use' : 'stop';
+        break;
+    }
+
+    const fullContent = contentParts.length > 0 ? contentParts.join('') : null;
+    const output: ProviderCallOutput = {
+      content: fullContent,
+      toolCalls,
+      finishReason: mappedFinish,
+      usage: {
+        inputTokens: usage?.prompt_tokens ?? 0,
+        outputTokens: usage?.completion_tokens ?? 0,
+      },
+    };
+    yield { type: 'done', output };
   }
 
   private buildRequestBody(input: ProviderCallInput): Record<string, unknown> {

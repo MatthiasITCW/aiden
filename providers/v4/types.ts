@@ -157,6 +157,32 @@ export interface ProviderCallOutput {
 }
 
 /**
+ * Phase 16c streaming event union. `callStream` yields these in order:
+ *   1. Zero or more `delta` events carrying incremental text content.
+ *   2. Zero or more `tool_call` events. Once a `tool_call` is seen on a
+ *      turn, the adapter SHOULD stop emitting `delta` events for the
+ *      same turn — agent loops use `tool_call` arrival as the cue to
+ *      switch the display from "streaming reply" to "executing tool"
+ *      mode (mirrors Hermes `_call_chat_completions` line 6852).
+ *   3. Exactly one `done` event at end-of-turn carrying finish reason +
+ *      usage + the assembled final `ProviderCallOutput`. The agent loop
+ *      pushes `output` onto its conversation history just like the
+ *      non-streaming path.
+ *
+ * `delta.content` may include partial UTF-8 codepoints split across SSE
+ * chunks; downstream consumers should accept the bytes as-is and let
+ * later concatenation reconstitute multi-byte chars.
+ *
+ * `done.output` MUST be self-contained — callers should not mix
+ * accumulated `delta` text with `output.content`. The adapter assembles
+ * the final content for them.
+ */
+export type StreamEvent =
+  | { type: 'delta'; content: string }
+  | { type: 'tool_call'; toolCall: ToolCallRequest }
+  | { type: 'done'; output: ProviderCallOutput };
+
+/**
  * The contract every adapter must satisfy. `call` is the required
  * non-streaming path (used by tests, `aiden batch`, and any code path that
  * needs deterministic completion). `callStream` is optional; when present
@@ -169,7 +195,7 @@ export interface ProviderCallOutput {
 export interface ProviderAdapter {
   apiMode: ApiMode;
   call(input: ProviderCallInput): Promise<ProviderCallOutput>;
-  callStream?(input: ProviderCallInput): AsyncIterable<Partial<ProviderCallOutput>>;
+  callStream?(input: ProviderCallInput): AsyncGenerator<StreamEvent, void, void>;
 }
 
 /**

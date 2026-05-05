@@ -35,9 +35,11 @@ import {
   ProviderAdapter,
   ProviderCallInput,
   ProviderCallOutput,
+  StreamEvent,
   ToolCallRequest,
   ToolSchema,
 } from './types';
+import { parseSseStream } from './chatCompletionsAdapter';
 import {
   ProviderError,
   ProviderRateLimitError,
@@ -101,6 +103,41 @@ interface AnthropicResponse {
     cache_creation_input_tokens?: number;
     cache_read_input_tokens?: number;
   };
+}
+
+/**
+ * Phase 16c: shape of a single Anthropic SSE event JSON. We dispatch on
+ * `type` to route into the per-block state machine.
+ */
+interface AnthropicStreamEvent {
+  type:
+    | 'message_start'
+    | 'content_block_start'
+    | 'content_block_delta'
+    | 'content_block_stop'
+    | 'message_delta'
+    | 'message_stop'
+    | 'error'
+    | 'ping'
+    | string;
+  index?: number;
+  content_block?: {
+    type: 'text' | 'tool_use' | 'thinking' | string;
+    id?: string;
+    name?: string;
+  };
+  delta?: {
+    type?: 'text_delta' | 'input_json_delta' | 'thinking_delta' | string;
+    text?: string;
+    partial_json?: string;
+    thinking?: string;
+    stop_reason?: string;
+  };
+  message?: {
+    usage?: { input_tokens?: number; output_tokens?: number };
+  };
+  usage?: { input_tokens?: number; output_tokens?: number };
+  error?: { message?: string; type?: string };
 }
 
 const DEFAULT_BASE_URL = 'https://api.anthropic.com';
@@ -223,6 +260,247 @@ export class AnthropicAdapter implements ProviderAdapter {
       `Provider ${this.providerName} exhausted retries`,
       this.providerName,
     );
+  }
+
+  /**
+   * Phase 16c: streaming variant. Parses Anthropic's SSE event stream into
+   * `delta` / `tool_call` / `done` events.
+   *
+   * Anthropic SSE wire shape (see anthropic/messages/streaming docs):
+   *   message_start { message: { ... } }
+   *   content_block_start { index, content_block: {type, ...} }
+   *   content_block_delta { index, delta: {type, text|partial_json|thinking, ...} }
+   *   content_block_stop { index }
+   *   message_delta { delta: {stop_reason, ...}, usage }
+   *   message_stop
+   *
+   * Each event arrives as `event: <name>\ndata: <json>\n\n`. The shared
+   * `parseSseStream` extracts the `data:` payloads only; we read the
+   * `type` field on each JSON to dispatch.
+   *
+   * Mirrors Hermes `_call_anthropic` (run_agent.py:7009) — text deltas
+   * are suppressed once a `tool_use` block appears in the same response,
+   * matching the chat_completions semantics.
+   */
+  async *callStream(
+    input: ProviderCallInput,
+  ): AsyncGenerator<StreamEvent, void, void> {
+    const baseBody = this.buildRequestBody(input);
+    const body = { ...baseBody, stream: true };
+    const url = `${this.baseUrl}/v1/messages`;
+    const headers = {
+      ...this.buildHeaders(),
+      Accept: 'text/event-stream',
+    };
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timer);
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new ProviderTimeoutError(this.providerName, this.timeoutMs);
+      }
+      throw new ProviderError(
+        `Provider ${this.providerName} stream request failed: ${err instanceof Error ? err.message : String(err)}`,
+        this.providerName,
+        undefined,
+        err,
+        true,
+      );
+    }
+
+    if (!response.ok) {
+      clearTimeout(timer);
+      const status = response.status;
+      const rawText = await this.safeReadText(response);
+      if (status === 429) {
+        throw new ProviderRateLimitError(this.providerName, rawText);
+      }
+      const retryable = status >= 500;
+      throw new ProviderError(
+        `Provider ${this.providerName} returned ${status}: ${rawText.slice(0, 500)}`,
+        this.providerName,
+        status,
+        rawText,
+        retryable,
+      );
+    }
+    if (!response.body) {
+      clearTimeout(timer);
+      throw new ProviderError(
+        `Provider ${this.providerName} returned an empty stream body`,
+        this.providerName,
+      );
+    }
+
+    // Block accumulators, keyed by `index`.
+    type BlockState = {
+      type: 'text' | 'tool_use' | 'thinking' | 'unknown';
+      text: string;
+      toolName?: string;
+      toolId?: string;
+      partialJson: string;
+    };
+    const blocks = new Map<number, BlockState>();
+    let stopReason: string | null = null;
+    let usage: { input_tokens?: number; output_tokens?: number } | null = null;
+    let toolUseSeen = false;
+    const toolCalls: ToolCallRequest[] = [];
+
+    try {
+      for await (const payload of parseSseStream(response.body)) {
+        let evt: AnthropicStreamEvent;
+        try {
+          evt = JSON.parse(payload) as AnthropicStreamEvent;
+        } catch {
+          continue;
+        }
+
+        // Top-level error frame (rare on Anthropic but possible on third-party
+        // anthropic-compat endpoints).
+        if (evt.type === 'error') {
+          const msg = evt.error?.message ?? 'unknown';
+          throw new ProviderError(
+            `Provider ${this.providerName} stream error: ${msg}`,
+            this.providerName,
+            undefined,
+            evt.error,
+            true,
+          );
+        }
+
+        if (evt.type === 'content_block_start' && evt.content_block) {
+          const idx = evt.index ?? 0;
+          const cb = evt.content_block;
+          if (cb.type === 'text') {
+            blocks.set(idx, { type: 'text', text: '', partialJson: '' });
+          } else if (cb.type === 'tool_use') {
+            blocks.set(idx, {
+              type: 'tool_use',
+              text: '',
+              toolName: cb.name,
+              toolId: cb.id,
+              partialJson: '',
+            });
+            toolUseSeen = true;
+            yield {
+              type: 'tool_call',
+              toolCall: {
+                id: cb.id ?? `pending-${idx}`,
+                name: cb.name ?? '?',
+                arguments: {},
+              },
+            };
+          } else if (cb.type === 'thinking') {
+            blocks.set(idx, { type: 'thinking', text: '', partialJson: '' });
+          } else {
+            blocks.set(idx, { type: 'unknown', text: '', partialJson: '' });
+          }
+        } else if (evt.type === 'content_block_delta' && evt.delta) {
+          const idx = evt.index ?? 0;
+          const block = blocks.get(idx);
+          if (!block) continue;
+          const d = evt.delta;
+          if (d.type === 'text_delta' && typeof d.text === 'string') {
+            block.text += d.text;
+            // Per Hermes line 7053: only stream text while no tool_use
+            // block has appeared in this turn.
+            if (!toolUseSeen && d.text.length > 0) {
+              yield { type: 'delta', content: d.text };
+            }
+          } else if (d.type === 'input_json_delta' && typeof d.partial_json === 'string') {
+            block.partialJson += d.partial_json;
+          }
+          // thinking_delta is captured but not surfaced — extended-thinking
+          // support is deferred to v4.1 per spec.
+        } else if (evt.type === 'message_delta' && evt.delta) {
+          if (typeof evt.delta.stop_reason === 'string') {
+            stopReason = evt.delta.stop_reason;
+          }
+          if (evt.usage) usage = evt.usage;
+        } else if (evt.type === 'message_start' && evt.message?.usage) {
+          usage = evt.message.usage;
+        }
+      }
+    } catch (err) {
+      clearTimeout(timer);
+      if (err instanceof ProviderError) throw err;
+      throw new ProviderError(
+        `Provider ${this.providerName} stream interrupted: ${err instanceof Error ? err.message : String(err)}`,
+        this.providerName,
+        undefined,
+        err,
+        true,
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+
+    // Assemble final tool calls + content from the per-block state.
+    let textContent = '';
+    for (const idx of [...blocks.keys()].sort((a, b) => a - b)) {
+      const block = blocks.get(idx)!;
+      if (block.type === 'text') {
+        textContent += block.text;
+      } else if (block.type === 'tool_use') {
+        let args: Record<string, unknown> = {};
+        const buf = block.partialJson.trim();
+        if (buf.length > 0) {
+          try {
+            const parsed = JSON.parse(buf);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+              args = parsed as Record<string, unknown>;
+            }
+          } catch {
+            console.warn(
+              `[${this.providerName}] failed to JSON.parse streamed tool args for ${block.toolName}; falling back to {}`,
+            );
+          }
+        }
+        toolCalls.push({
+          id: block.toolId ?? `call_${idx}_${Date.now().toString(36)}`,
+          name: block.toolName ?? '?',
+          arguments: args,
+        });
+      }
+    }
+
+    let mappedFinish: ProviderCallOutput['finishReason'];
+    switch (stopReason) {
+      case 'end_turn':
+      case 'stop_sequence':
+        mappedFinish = 'stop';
+        break;
+      case 'tool_use':
+        mappedFinish = 'tool_use';
+        break;
+      case 'max_tokens':
+      case 'model_context_window_exceeded':
+        mappedFinish = 'length';
+        break;
+      default:
+        mappedFinish = toolCalls.length > 0 ? 'tool_use' : 'stop';
+        break;
+    }
+
+    const output: ProviderCallOutput = {
+      content: textContent,
+      toolCalls,
+      finishReason: mappedFinish,
+      usage: {
+        inputTokens: usage?.input_tokens ?? 0,
+        outputTokens: usage?.output_tokens ?? 0,
+      },
+    };
+    yield { type: 'done', output };
   }
 
   private buildHeaders(): Record<string, string> {

@@ -36,6 +36,7 @@ import {
   ProviderAdapter,
   ProviderCallInput,
   ProviderCallOutput,
+  StreamEvent,
   ToolCallRequest,
   ToolSchema,
 } from './types';
@@ -73,6 +74,14 @@ interface OllamaChatResponse {
   prompt_eval_count?: number;
   eval_count?: number;
 }
+
+/**
+ * Phase 16c: a single NDJSON line from `/api/chat` with `stream:true`.
+ * Schema is identical to `OllamaChatResponse` — Ollama uses the same
+ * shape for streaming chunks and the final summary, with `done` flipping
+ * to `true` only on the last line.
+ */
+interface OllamaStreamChunk extends OllamaChatResponse {}
 
 const DEFAULT_BASE_URL = 'http://localhost:11434';
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -169,6 +178,181 @@ export class OllamaPromptToolsAdapter implements ProviderAdapter {
       `Provider ${this.providerName} exhausted retries`,
       this.providerName,
     );
+  }
+
+  /**
+   * Phase 16c: streaming variant. Ollama's /api/chat with `stream:true`
+   * emits NDJSON — one JSON object per line — rather than SSE. Each
+   * object has shape `{message:{role, content:<delta>}, done:bool, ...}`.
+   * The final object has `done:true` plus full token-count fields.
+   *
+   * Tool emulation runs end-of-turn: we accumulate the full text and
+   * THEN parse `<tool_call>` tags out of it, emitting `tool_call` events
+   * as they're discovered (via incremental scanning of the buffer). To
+   * keep the streamed UX clean, we suppress text deltas the moment a
+   * `<tool_call>` opening tag appears in the buffer (matches the
+   * non-streaming `parseResponse` behaviour where `textBefore` is the
+   * portion before the first tag).
+   */
+  async *callStream(
+    input: ProviderCallInput,
+  ): AsyncGenerator<StreamEvent, void, void> {
+    const baseBody = this.buildRequestBody(input);
+    const body = { ...baseBody, stream: true };
+    const url = `${this.baseUrl}/api/chat`;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timer);
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new ProviderTimeoutError(this.providerName, this.timeoutMs);
+      }
+      throw new ProviderError(
+        `Ollama not reachable at ${this.baseUrl}: ${err instanceof Error ? err.message : String(err)}`,
+        this.providerName,
+        undefined,
+        err,
+        true,
+      );
+    }
+
+    if (!response.ok) {
+      clearTimeout(timer);
+      const status = response.status;
+      const rawText = await this.safeReadText(response);
+      throw new ProviderError(
+        `Provider ${this.providerName} returned ${status}: ${rawText.slice(0, 500)}`,
+        this.providerName,
+        status,
+        rawText,
+        status >= 500,
+      );
+    }
+    if (!response.body) {
+      clearTimeout(timer);
+      throw new ProviderError(
+        `Provider ${this.providerName} returned an empty stream body`,
+        this.providerName,
+      );
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let lineBuffer = '';
+    let fullContent = '';
+    let toolTagSeen = false;
+    let promptEvalCount = 0;
+    let evalCount = 0;
+    let doneReason: string | undefined;
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        lineBuffer += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = lineBuffer.indexOf('\n')) !== -1) {
+          const line = lineBuffer.slice(0, nl).trim();
+          lineBuffer = lineBuffer.slice(nl + 1);
+          if (!line) continue;
+          let chunk: OllamaStreamChunk;
+          try {
+            chunk = JSON.parse(line) as OllamaStreamChunk;
+          } catch {
+            continue;
+          }
+          const piece = chunk.message?.content ?? '';
+          if (piece) {
+            fullContent += piece;
+            // Detect tool tag boundary. Once seen, stop streaming text
+            // deltas — the rest of the response is tool-call markup.
+            if (!toolTagSeen && fullContent.includes('<tool_call>')) {
+              toolTagSeen = true;
+              // Emit any pre-tag remainder of THIS piece (the part of
+              // `piece` before the `<tool_call>` substring inside it).
+              const localTagIdx = piece.indexOf('<tool_call>');
+              if (localTagIdx > 0) {
+                yield { type: 'delta', content: piece.slice(0, localTagIdx) };
+              }
+            } else if (!toolTagSeen) {
+              yield { type: 'delta', content: piece };
+            }
+          }
+          if (chunk.done) {
+            if (typeof chunk.prompt_eval_count === 'number') {
+              promptEvalCount = chunk.prompt_eval_count;
+            }
+            if (typeof chunk.eval_count === 'number') {
+              evalCount = chunk.eval_count;
+            }
+            if (typeof chunk.done_reason === 'string') {
+              doneReason = chunk.done_reason;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      clearTimeout(timer);
+      throw new ProviderError(
+        `Provider ${this.providerName} stream interrupted: ${err instanceof Error ? err.message : String(err)}`,
+        this.providerName,
+        undefined,
+        err,
+        true,
+      );
+    } finally {
+      clearTimeout(timer);
+      try {
+        reader.releaseLock();
+      } catch {
+        // ignore
+      }
+    }
+
+    // Now extract <tool_call> blocks from the full content. Reuse the
+    // exact same logic used by the non-streaming path so behaviour
+    // matches across modes.
+    const { textBefore, toolCalls } = this.extractToolCalls(fullContent);
+
+    // For each parsed tool call, emit a `tool_call` event so display
+    // knows tools are about to fire. (We deliberately emit AFTER the
+    // text deltas, since Ollama doesn't tell us tool names mid-stream.)
+    for (const tc of toolCalls) {
+      yield {
+        type: 'tool_call',
+        toolCall: { id: tc.id, name: tc.name, arguments: tc.arguments },
+      };
+    }
+
+    let mappedFinish: ProviderCallOutput['finishReason'];
+    if (toolCalls.length > 0) {
+      mappedFinish = 'tool_use';
+    } else if (doneReason === 'length') {
+      mappedFinish = 'length';
+    } else {
+      mappedFinish = 'stop';
+    }
+
+    const output: ProviderCallOutput = {
+      content: toolCalls.length > 0 ? textBefore : fullContent,
+      toolCalls,
+      finishReason: mappedFinish,
+      usage: {
+        inputTokens: promptEvalCount,
+        outputTokens: evalCount,
+      },
+    };
+    yield { type: 'done', output };
   }
 
   private buildRequestBody(input: ProviderCallInput): OllamaChatRequest {
