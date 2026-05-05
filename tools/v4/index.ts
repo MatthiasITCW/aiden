@@ -20,6 +20,7 @@ import { webSearchTool } from './web/webSearch';
 import { webFetchTool } from './web/webFetch';
 import { webPageTool } from './web/webPage';
 import { deepResearchTool } from './web/deepResearch';
+import { openUrlTool } from './web/openUrl';
 
 import { fileReadTool } from './files/fileRead';
 import { fileListTool } from './files/fileList';
@@ -75,6 +76,9 @@ export function registerReadOnlyTools(registry: ToolRegistry): void {
   registry.register(webFetchTool);
   registry.register(webPageTool);
   registry.register(deepResearchTool);
+  // Phase 16f: open_url uses shell launch (start chrome / open / xdg-open)
+  // for "open X in browser" requests — bypasses Playwright detection.
+  registry.register(openUrlTool);
 
   registry.register(fileReadTool);
   registry.register(fileListTool);
