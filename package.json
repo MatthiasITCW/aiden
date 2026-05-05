@@ -25,14 +25,13 @@
   },
   "bin": {
     "devos-ai": "./dist/bin/npx-init.js",
-    "aiden": "./dist-bundle/cli.js"
+    "aiden": "./dist/cli/v4/aidenCLI.js"
   },
   "main": "./dist/index.js",
   "files": [
     "dist/",
-    "dist-bundle/cli.js",
-    "dist-bundle/index.js",
     "config/",
+    "skills/",
     "plugins/aiden-plugin-cdp-browser/",
     "plugins/aiden-plugin-claude-pro/",
     "plugins/aiden-plugin-chatgpt-plus/",

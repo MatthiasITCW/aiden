@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * cli/v4/aidenCLI.ts — Aiden v4.0.0 (Phase 14c)
  *
