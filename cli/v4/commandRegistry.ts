@@ -26,6 +26,7 @@ import type { Message } from '../../providers/v4/types';
 import type { PersonalityManager } from '../../core/v4/personality';
 import type { AidenPaths } from '../../core/v4/paths';
 import type { AidenAgent } from '../../core/v4/aidenAgent';
+import type { PluginLoader } from '../../core/v4/plugins/pluginLoader';
 
 /**
  * Lightweight session abstraction commands consume. The full chat REPL
@@ -76,6 +77,19 @@ export interface SlashCommandContext {
    * switch so the next turn picks up the new overlay).
    */
   agent?: AidenAgent;
+  /**
+   * Phase 17: live plugin loader. /plugins commands read its registry,
+   * trigger reloads, and (via the install path) write the granted-
+   * permissions file before re-discovering.
+   */
+  pluginLoader?: PluginLoader;
+  /**
+   * Phase 17: prompt-the-user hook used by /plugins install for the
+   * permission summary confirmation. Returns true to grant, false to
+   * deny. Tests inject a mock; the chat REPL injects a readline-backed
+   * yes/no prompt.
+   */
+  confirm?: (message: string) => Promise<boolean>;
 }
 
 /** Result produced by a command handler. */

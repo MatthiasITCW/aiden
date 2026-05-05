@@ -26,6 +26,7 @@ import { providers } from './providers';
 import { identity } from './identity';
 import { debugPrompt } from './debugPrompt';
 import { streaming } from './streaming';
+import { plugins } from './plugins';
 
 export {
   help,
@@ -48,6 +49,7 @@ export {
   identity,
   debugPrompt,
   streaming,
+  plugins,
 };
 
 /** All built-in system commands, in canonical order. */
@@ -67,6 +69,7 @@ export const allCommands: SlashCommand[] = [
   yolo,
   skin,
   skills,
+  plugins,
   reloadMcp,
   reasoning,
   verbose,

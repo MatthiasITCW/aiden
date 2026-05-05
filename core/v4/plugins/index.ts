@@ -30,3 +30,12 @@ export type { LoadedPlugin, PluginStatus } from './pluginRegistry';
 
 export { PluginLoader } from './pluginLoader';
 export type { PluginLoaderOptions } from './pluginLoader';
+
+export {
+  GRANTED_FILE,
+  GRANTED_VERSION,
+  loadGrantedPermissions,
+  saveGrantedPermissions,
+  buildPermissionChecker,
+  formatInstallSummary,
+} from './pluginPermissions';
