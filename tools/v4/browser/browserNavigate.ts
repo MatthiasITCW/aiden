@@ -9,13 +9,16 @@
  */
 
 import type { ToolHandler } from '../../../core/v4/toolRegistry';
-import { pwNavigate } from '../../../core/playwrightBridge';
+import { pwNavigate, pwSnapshot } from '../../../core/playwrightBridge';
+import { detectCaptchaMarkers } from './captchaCheck';
 
 export const browserNavigateTool: ToolHandler = {
   schema: {
     name: 'browser_navigate',
     description:
-      'Navigate the browser to a URL. Reuses the active tab; opens one if none exists.',
+      'Navigate the browser to a URL. Reuses the active tab; opens one if none exists. ' +
+      'Returns success:false when the loaded page appears to be a CAPTCHA / bot challenge ' +
+      '— in that case prefer `open_url` (real user profile, no detection).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -31,7 +34,37 @@ export const browserNavigateTool: ToolHandler = {
     const url = String(args.url ?? '').trim();
     if (!url) return { success: false, error: 'No URL provided' };
     const r = await pwNavigate(url);
-    if (r.ok) return { success: true, url: r.url };
-    return { success: false, error: r.error, url };
+    if (!r.ok) return { success: false, error: r.error, url };
+
+    // Phase 16f Task 3: post-load CAPTCHA detection. Without this check
+    // browser_navigate returned success:true on Cloudflare-walled pages
+    // and the agent confidently said "search completed." Bias toward
+    // sensitivity — false negatives caused the original bug; false
+    // positives just nudge the agent to retry via open_url.
+    try {
+      const snap = await pwSnapshot();
+      if (snap.ok && snap.text) {
+        const check = detectCaptchaMarkers(snap.text);
+        if (check.detected) {
+          return {
+            success: false,
+            url: r.url,
+            error:
+              `Page appears to be a CAPTCHA / bot challenge ` +
+              `(matched: ${check.markers.slice(0, 3).join(', ')}). ` +
+              `Try open_url instead — it launches your real browser ` +
+              `with your existing cookies/login state, no detection.`,
+            captcha_detected: true,
+            captcha_markers: check.markers,
+          };
+        }
+      }
+    } catch {
+      // Snapshot failure is not a navigation failure. Fall through to
+      // success — better to occasionally miss a CAPTCHA than to break
+      // navigation when the snapshot path has an unrelated bug.
+    }
+
+    return { success: true, url: r.url };
   },
 };
