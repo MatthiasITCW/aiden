@@ -18,6 +18,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { resolveAidenPaths, type AidenPaths } from '../../core/v4/paths';
+import { LicenseClient, hasLicense } from '../../core/v4/license';
+import { checkForUpdate } from '../../core/v4/update/checkUpdate';
 
 export interface CheckResult {
   name: string;
@@ -357,6 +359,124 @@ export async function checkPlatformPaths(paths: AidenPaths): Promise<CheckResult
   }
 }
 
+/**
+ * Phase 20 Task 7: license-server reachability + local cache state.
+ * `/doctor` shouldn't block when offline — we treat both "no local cache
+ * (free tier)" and "server unreachable" as informational, not failures.
+ * Hard failures are reserved for "cache exists but is corrupt" and
+ * "license server returned a definite error response."
+ */
+export async function checkLicense(opts: {
+  paths: AidenPaths;
+  fetchImpl?: typeof fetch;
+  timeoutMs: number;
+}): Promise<CheckResult> {
+  const t0 = Date.now();
+  try {
+    const present = await hasLicense(opts.paths);
+    if (!present) {
+      return {
+        name: 'license',
+        passed: true,
+        message: 'free tier (no license cache)',
+        durationMs: Date.now() - t0,
+      };
+    }
+    // Cache exists — try to verify (network or cached). Either result is OK
+    // for /doctor's purposes; we only fail on parse/decrypt errors.
+    const client = new LicenseClient({ paths: opts.paths });
+    return await withTimeout(
+      (async () => {
+        const status = await client.statusFromCache();
+        if (status.tier !== 'pro') {
+          return {
+            name: 'license',
+            passed: true,
+            message: 'license cache present but not currently valid (free tier)',
+            suggestion: 'run /license refresh to re-verify against server',
+            durationMs: Date.now() - t0,
+          };
+        }
+        const expiry = status.cache.expiresAt || 'lifetime';
+        return {
+          name: 'license',
+          passed: true,
+          message: `Pro (${status.cache.plan}, expires ${expiry})`,
+          durationMs: Date.now() - t0,
+        };
+      })(),
+      opts.timeoutMs,
+      {
+        name: 'license',
+        passed: false as const,
+        message: 'license check timed out reading cache',
+        durationMs: Date.now() - t0,
+      } as CheckResult,
+    );
+  } catch (err) {
+    return {
+      name: 'license',
+      passed: false,
+      message: `license check failed: ${err instanceof Error ? err.message : String(err)}`,
+      suggestion: 'run /license refresh; if persistent, re-activate with /license activate <key>',
+      durationMs: Date.now() - t0,
+    };
+  }
+}
+
+/**
+ * Phase 20 Task 7: npm update check status. Reports the cached
+ * `updateAvailable` flag without forcing a registry round-trip when
+ * the cache is fresh — same 6h discipline as the boot card.
+ */
+export async function checkUpdate(opts: {
+  paths: AidenPaths;
+  installedVersion: string;
+  timeoutMs: number;
+}): Promise<CheckResult> {
+  const t0 = Date.now();
+  return withTimeout(
+    (async () => {
+      try {
+        const status = await checkForUpdate({
+          paths: opts.paths,
+          installedVersion: opts.installedVersion,
+        });
+        if (!status.updateAvailable) {
+          const where = status.fromCache ? 'cached' : 'live';
+          return {
+            name: 'npm update',
+            passed: true,
+            message: `installed v${status.installed} is up to date (${where})`,
+            durationMs: Date.now() - t0,
+          };
+        }
+        return {
+          name: 'npm update',
+          passed: true,
+          message: `v${status.latest} available (installed: v${status.installed})`,
+          suggestion: 'run `npm install -g aiden-runtime@latest`',
+          durationMs: Date.now() - t0,
+        };
+      } catch (err) {
+        return {
+          name: 'npm update',
+          passed: false,
+          message: `update check error: ${err instanceof Error ? err.message : String(err)}`,
+          durationMs: Date.now() - t0,
+        };
+      }
+    })(),
+    opts.timeoutMs,
+    {
+      name: 'npm update',
+      passed: true,
+      message: 'update check timed out (network slow — non-fatal)',
+      durationMs: Date.now() - t0,
+    },
+  );
+}
+
 export async function checkLogsWritable(paths: AidenPaths): Promise<CheckResult> {
   const t0 = Date.now();
   try {
@@ -391,6 +511,17 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
   const spawnImpl = opts.spawnImpl ?? spawn;
   const start = Date.now();
 
+  // Resolve the installed version once; pulled from package.json so a tag
+  // mismatch surfaces here rather than via a confusing /doctor pass.
+  let installedVersion = '0.0.0';
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const pkg = require('../../package.json') as { version: string };
+    installedVersion = pkg.version;
+  } catch {
+    /* leave default */
+  }
+
   const results: CheckResult[] = [];
   results.push(await checkConfigFile(paths));
   results.push(checkProviderAuth(env));
@@ -402,6 +533,9 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
   results.push(await checkBundledManifest(paths));
   results.push(await checkPlatformPaths(paths));
   results.push(await checkLogsWritable(paths));
+  // Phase 20 Task 7: license + update health.
+  results.push(await checkLicense({ paths, fetchImpl, timeoutMs }));
+  results.push(await checkUpdate({ paths, installedVersion, timeoutMs }));
 
   return {
     results,
