@@ -274,6 +274,12 @@ export const plugins: SlashCommand = {
       const newPerms = entry.manifest.permissions.filter(
         (p) => !previous.includes(p),
       );
+      // Phase 17.1: "NEW" framing belongs to the upgrade case only — when a
+      // granted file already exists AND the manifest declares perms that
+      // weren't covered before. On first install (no granted file),
+      // `previous` is [] and every declared perm looks "new" — show plain
+      // "Permissions requested: ..." instead.
+      const isUpgrade = previous.length > 0 && newPerms.length > 0;
 
       ctx.display.info(`--- Permission summary for ${name} ---`);
       ctx.display.write(formatInstallSummary(entry.manifest) + '\n');
@@ -282,14 +288,14 @@ export const plugins: SlashCommand = {
           `Previously granted: ${previous.join(', ') || '(none)'}`,
         );
       }
-      if (newPerms.length > 0) {
+      if (isUpgrade) {
         ctx.display.warn(`NEW permissions requested: ${newPerms.join(', ')}`);
       }
       ctx.display.write('\n');
 
       const confirmFn = ctx.confirm ?? (async () => false);
       const allow = await confirmFn(
-        newPerms.length > 0
+        isUpgrade
           ? `Grant the listed permissions (including ${newPerms.length} new)? [y/N] `
           : `Grant the listed permissions? [y/N] `,
       );
