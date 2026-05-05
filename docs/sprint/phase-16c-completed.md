@@ -105,3 +105,14 @@ boundaries match BPE, no SSE flush-the-whole-response pathology.
   `cli/commands.test.ts` (assertions)
 - `scripts/smoke-phase16c.ts` (new)
 - `docs/sprint/hermes-streaming-audit.md` (new), this file
+
+## Note: buffer-on-tool-call (added in 16c.2)
+
+When the LLM emits a tool call mid-stream, the agent suppresses further
+delta events until the tool completes. This matches Hermes
+(`run_agent.py:6852` / `7053`) and is **by design** — tool prep prose
+that the model will discard once it sees the tool result is noise.
+**Pure-text responses stream token-by-token**; only tool-using turns
+buffer. If a smoke run feels "non-streaming," check whether the prompt
+triggered a tool. `scripts/smoke-streaming-visibility.ts` exercises the
+non-tool path explicitly.
