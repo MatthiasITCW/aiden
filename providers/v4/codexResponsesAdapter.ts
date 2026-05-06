@@ -47,6 +47,7 @@ import {
   ProviderRateLimitError,
   ProviderTimeoutError,
 } from './errors';
+import { parseSseStream } from './chatCompletionsAdapter';
 
 /**
  * Phase 21 #6 reopen — pull `chatgpt_account_id` out of an OpenAI OAuth
@@ -182,6 +183,37 @@ const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_RETRIES = 2;
 
+/**
+ * Phase 21 #6c — apply per-item text buffers (collected from
+ * `response.output_text.delta` events) to message items inside an
+ * aggregated ResponsesAPIResponse. Used as a defensive fallback when
+ * `response.completed` arrives before all delta-bound items, or when
+ * the stream ends without a `completed` event.
+ */
+function applyTextBuffers(
+  resp: ResponsesAPIResponse,
+  buffers: Map<string, string>,
+): void {
+  if (!Array.isArray(resp.output)) return;
+  for (const item of resp.output) {
+    const id = (item as { id?: string }).id ?? '';
+    const buf = buffers.get(id);
+    if (!buf || (item as { type?: string }).type !== 'message') continue;
+    const msg = item as ResponsesOutputMessage;
+    if (!Array.isArray(msg.content) || msg.content.length === 0) {
+      msg.content = [{ type: 'output_text', text: buf }];
+    } else {
+      // If content already has text parts, append; otherwise insert.
+      const hasText = msg.content.some(
+        (p) => p.type === 'output_text' || p.type === 'text',
+      );
+      if (!hasText) {
+        msg.content.push({ type: 'output_text', text: buf });
+      }
+    }
+  }
+}
+
 export class CodexResponsesAdapter implements ProviderAdapter {
   apiMode: ApiMode = 'codex_responses';
   private readonly baseUrl: string;
@@ -226,6 +258,14 @@ export class CodexResponsesAdapter implements ProviderAdapter {
         const response = await this.fetchWithTimeout(url, headers, body);
 
         if (response.ok) {
+          // Phase 21 #6c: Codex backend always streams. Collect the SSE
+          // frames into a final ResponsesAPIResponse so the rest of the
+          // adapter (parseResponse, callers) sees the same JSON shape
+          // it expects from non-streaming providers.
+          if (this.isCodexBackend()) {
+            const aggregated = await this.collectStreamedResponse(response);
+            return this.parseResponse(aggregated);
+          }
           const json = (await response.json()) as ResponsesAPIResponse;
           return this.parseResponse(json);
         }
@@ -319,6 +359,16 @@ export class CodexResponsesAdapter implements ProviderAdapter {
       body.max_output_tokens = input.maxTokens;
     }
     if (input.temperature != null) body.temperature = input.temperature;
+    // Phase 21 #6c: chatgpt.com/backend-api/codex requires `stream: true`
+    // on every request — sending stream:false (or omitting) returns
+    // HTTP 400 "Stream must be set to true." Hermes always streams the
+    // Codex backend (run_agent.py _run_codex_stream call site). Aiden's
+    // call() collects the SSE frames internally and returns the final
+    // aggregated ResponsesAPIResponse so v4 callers that don't request
+    // streaming still see the same JSON-style result.
+    if (this.isCodexBackend()) {
+      body.stream = true;
+    }
     if (input.extraBody) Object.assign(body, input.extraBody);
     return body;
   }
@@ -539,6 +589,104 @@ export class CodexResponsesAdapter implements ProviderAdapter {
       },
       raw: json,
     };
+  }
+
+  /**
+   * Phase 21 #6c — drain the Codex Responses-API SSE stream into a
+   * single ResponsesAPIResponse aggregate. The Codex backend rejects
+   * `stream: false` outright; we always set stream: true and collect
+   * frames here so the rest of the adapter is shape-agnostic.
+   *
+   * Aggregation strategy mirrors the OpenAI Responses streaming spec:
+   *   - `response.created`     → seed the response shape
+   *   - `response.output_item.added` / `done` → append to `output[]`
+   *   - `response.output_text.delta` → concat into the matching message
+   *      item's text content
+   *   - `response.completed`   → authoritative final shape; if present,
+   *      use its `response` field verbatim and discard our local accum
+   *   - `response.failed`      → throw so the retry path fires
+   *
+   * Unknown event types are ignored (forward-compat with future
+   * incremental events the OpenAI team adds).
+   */
+  private async collectStreamedResponse(
+    response: Response,
+  ): Promise<ResponsesAPIResponse> {
+    if (!response.body) {
+      throw new ProviderError(
+        `Provider ${this.providerName} returned a streaming response with no body`,
+        this.providerName,
+      );
+    }
+    const aggregate: ResponsesAPIResponse = { output: [], status: undefined };
+    // Per-item-id text buffer — `output_text.delta` events reference
+    // an item_id that matches an earlier `output_item.added`.
+    const textBuffers = new Map<string, string>();
+    let final: ResponsesAPIResponse | null = null;
+
+    for await (const payload of parseSseStream(response.body)) {
+      let event: {
+        type?: string;
+        response?: ResponsesAPIResponse;
+        item?: ResponsesOutputItem;
+        item_id?: string;
+        delta?: string;
+        error?: { message?: string };
+      };
+      try {
+        event = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+      const t = event.type ?? '';
+      if (t === 'response.completed' && event.response) {
+        final = event.response;
+        // Apply any accumulated text deltas in case `completed` arrived
+        // before a delta we already saw — defensive.
+        applyTextBuffers(final, textBuffers);
+        continue;
+      }
+      if (t === 'response.failed' || t === 'response.error') {
+        const msg = event.error?.message ?? `${t} event from Codex stream`;
+        throw new ProviderError(
+          `Provider ${this.providerName} streaming failed: ${msg}`,
+          this.providerName,
+        );
+      }
+      if (t === 'response.created' && event.response) {
+        // Seed status/usage/output from the initial response object.
+        Object.assign(aggregate, event.response);
+        if (!Array.isArray(aggregate.output)) aggregate.output = [];
+        continue;
+      }
+      if (t === 'response.output_item.added' && event.item) {
+        if (!Array.isArray(aggregate.output)) aggregate.output = [];
+        aggregate.output.push(event.item);
+        continue;
+      }
+      if (t === 'response.output_item.done' && event.item) {
+        // Replace any in-progress copy of the same id.
+        if (!Array.isArray(aggregate.output)) aggregate.output = [];
+        const idx = aggregate.output.findIndex(
+          (o) => (o as { id?: string }).id === (event.item as { id?: string }).id,
+        );
+        if (idx >= 0) aggregate.output[idx] = event.item;
+        else aggregate.output.push(event.item);
+        continue;
+      }
+      if (t === 'response.output_text.delta' && typeof event.delta === 'string') {
+        const id = event.item_id ?? '';
+        textBuffers.set(id, (textBuffers.get(id) ?? '') + event.delta);
+        continue;
+      }
+      // All other event types (output_text.done, content_part.added,
+      // refusal, audio, etc.) are ignored — `response.completed` carries
+      // the authoritative final shape.
+    }
+
+    if (final) return final;
+    applyTextBuffers(aggregate, textBuffers);
+    return aggregate;
   }
 
   private async fetchWithTimeout(

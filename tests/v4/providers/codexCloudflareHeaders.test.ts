@@ -52,22 +52,33 @@ describe('CodexResponsesAdapter — Codex backend headers (Phase 21 #6)', () => 
       captured.url = String(url);
       captured.headers = init?.headers ?? {};
       captured.body = JSON.parse(String(init?.body ?? '{}'));
-      // Minimal valid Responses-API response so the adapter parses cleanly.
-      return new Response(
-        JSON.stringify({
-          id: 'resp_1',
-          status: 'completed',
-          output: [
-            {
-              type: 'message',
-              role: 'assistant',
-              content: [{ type: 'output_text', text: 'ok' }],
-            },
-          ],
-          usage: { input_tokens: 1, output_tokens: 1 },
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
+      // Minimal response. Codex backend → SSE (Phase 21 #6c always-stream
+      // contract). Non-Codex baseUrl → plain JSON. Tests below pass the
+      // baseUrl through callWith() so we route on captured.url.
+      const isCodex = String(url).includes('chatgpt.com/backend-api/codex');
+      const finalShape = {
+        id: 'resp_1',
+        status: 'completed',
+        output: [
+          {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'ok' }],
+          },
+        ],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+      if (isCodex) {
+        const evt = { type: 'response.completed', response: finalShape };
+        return new Response(
+          `data: ${JSON.stringify(evt)}\n\ndata: [DONE]\n\n`,
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        );
+      }
+      return new Response(JSON.stringify(finalShape), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
     }) as never;
   });
 
