@@ -61,18 +61,29 @@ export class Display {
     }
   }
 
-  /** Build the welcome banner string (does not write). */
-  banner(version = '4.0.0'): string {
+  /**
+   * Build the welcome banner string (does not write).
+   *
+   * `opts.tip` (Phase 22): when provided, appends a `✦ Tip: <text>` line
+   * in muted colour beneath the hint. Callers (REPL boot card, setup
+   * wizard) pass a tip from `cli/v4/tips.ts:getRandomTip`. Omitted in
+   * tests so banner output stays deterministic unless explicitly opted
+   * in.
+   */
+  banner(version = '4.0.0', opts: { tip?: string } = {}): string {
     const sk = this.skin;
     const lines = AIDEN_BANNER.split('\n').map((l) => sk.applyColors(l, 'brand'));
     const tagline = sk.applyColors(`Aiden v${version} — your local-first agent`, 'muted');
     const hint = sk.applyColors('Type /help to see what I can do.', 'muted');
-    return `${lines.join('\n')}\n  ${tagline}\n  ${hint}\n`;
+    const tipLine = opts.tip
+      ? `\n  ${sk.applyColors(`✦ Tip: ${opts.tip}`, 'muted')}`
+      : '';
+    return `${lines.join('\n')}\n  ${tagline}\n  ${hint}${tipLine}\n`;
   }
 
-  /** Print the banner. */
-  printBanner(version?: string): void {
-    this.out.write(this.banner(version));
+  /** Print the banner. `opts.tip` forwards to `banner()`. */
+  printBanner(version?: string, opts: { tip?: string } = {}): void {
+    this.out.write(this.banner(version, opts));
   }
 
   /**

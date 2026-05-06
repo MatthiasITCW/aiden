@@ -99,6 +99,21 @@ describe('Display', () => {
     expect(b).toMatch(/\/help/);
   });
 
+  it('banner with no tip option omits the tip line', () => {
+    const b = stripAnsi(display.banner('4.2.1'));
+    expect(b).not.toMatch(/✦ Tip:/);
+  });
+
+  it('banner with tip option appends a single ✦ Tip line', () => {
+    const b = stripAnsi(
+      display.banner('4.2.1', { tip: 'Type /help to see what I can do.' }),
+    );
+    expect(b).toMatch(/✦ Tip: Type \/help to see what I can do\./);
+    // Only one tip line — not duplicated alongside the constant /help hint.
+    const tipLines = b.split('\n').filter((l) => l.includes('✦ Tip:'));
+    expect(tipLines).toHaveLength(1);
+  });
+
   it('userTurn formats with a "you" marker', () => {
     const out = stripAnsi(display.userTurn('hello'));
     expect(out).toMatch(/you/);

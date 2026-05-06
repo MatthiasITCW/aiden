@@ -48,6 +48,7 @@ import {
   isCompletePaste,
   hasPasteMarkers,
 } from './bracketedPaste';
+import { getRandomTip } from './tips';
 
 /** Lightweight readline / inquirer abstraction so tests can swap in stubs. */
 export interface ChatPromptApi {
@@ -383,7 +384,9 @@ export class ChatSession implements ChatSessionLike {
 
   // ── Boxed startup card ─────────────────────────────────────────────
   async renderStartupCard(): Promise<void> {
-    this.opts.display.printBanner();
+    // Phase 22 Task 7: rotating tip beneath the banner. One pick per
+    // boot; tips.ts caps the pool at ~10 high-signal lines.
+    this.opts.display.printBanner(undefined, { tip: getRandomTip() });
 
     const tools = this.opts.toolRegistry.list();
     let skills: { name: string; category?: string }[] = [];
