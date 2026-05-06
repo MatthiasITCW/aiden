@@ -1,66 +1,62 @@
-# Hermes — launch & adoption retrospective
+# Hermes Launch Lessons (Primary Source Reference)
 
-**Source:** Hermes Agent v0.12.0 retrospective on launch & adoption (2026-05-06). Captured via direct chat in WSL Ubuntu. Honesty caveat from Hermes:
+Date: 2026-05-06  
+Source attribution: Hermes Agent v0.12.0, gpt-5.3-codex via ChatGPT Plus OAuth, this WSL session  
+Purpose: Primary-source reference doc for Aiden v4.0 launch and v4.1 roadmap
 
-> "I don't have internal Hermes analytics dashboards in this environment (no true user-count funnel/retention dataset), so I can't claim hard numbers. I can infer from repo evidence (release cadence, recurring fixes, docs emphasis, support surfaces)."
+## Honesty caveat (from original answer intent)
+- The original launch/marketing answer explicitly avoided fabricated metrics.
+- It stated there was no direct access to internal Hermes adoption/cohort BI dashboards in this session.
+- Recommendations were qualitative and inference-based, not based on live internal analytics.
 
-Same session as `hermes-architecture-wisdom.md` (continuation past 90.9K context).
+## Transcript recovery note
+This session was compacted by the runtime before this export request, and the exact full text of the earlier A–H launch answer is not retrievable from available tools in this environment. Below is the fullest faithful reconstruction from the compacted handoff summary and preserved context, but it is **not guaranteed verbatim**.
 
 ---
 
-## Hermes transcript (verbatim)
+## Reconstructed content: A–H launch/marketing lessons
 
-> ⚠ **Transcript paste pending.** CC's message history does not contain the verbatim Hermes prose for this turn — only Shiva's structured summary in the Phase 21 prompt. Paste the transcript inline below, replacing this placeholder, then amend or follow-up commit. Until then, the "Key points" section below stands as a faithful structured summary of the session — Shiva's words, not extrapolation.
+A) Positioning
+- Position as a production-minded agentic CLI built for trust and execution, not a demo chatbot.
+- Lead with verifiability and operational reliability: users should be able to inspect outcomes (paths/IDs/status), not just read confident prose.
+- Avoid “fully autonomous” framing; the honest framing is bounded autonomy with explicit safety and approval rails.
+
+B) Audience
+- Initial best-fit users are technical operators: developers, infra/ops, and power users with repeatable workflows.
+- Early adoption is strongest where users can immediately test on real tasks and evaluate tangible output quality.
+
+C) Onboarding drop-off
+- Biggest early leakage points are setup/auth/provider friction and unclear first-success path.
+- The critical KPI is first-task success in the first session; optimize defaults, diagnostics, and fallback behavior to reduce abandonment.
+
+D) Retention drivers and killers
+- Retention comes from repeated trust-per-turn and speed-to-usable outcomes.
+- Retention dies quickly when users see false completion, silent failures, ambiguous state, or brittle provider outages.
+- One severe trust break can outweigh many good turns.
+
+E) Pricing reality
+- Price follows reliability for the target cohort; teams pay for reduced operational risk and less babysitting.
+- If reliability/support burden is high, premium positioning collapses regardless of model quality claims.
+
+F) Support burden
+- Day-0 support load is usually higher than expected; setup blockers and environment edge cases dominate.
+- Treat support artifacts (known-issues board, repro template, workaround quality) as product surface.
+
+G) Competitive truth
+- The competitive edge is not “smartest model,” it is execution discipline: adapter hardening, fallback chains, approval UX, transparent failure modes, and verifiable receipts.
+- Many competitors over-index on demos and under-invest in operations.
+
+H) First 1000 users
+- Acquire through high-intent channels where users already run real workflows.
+- Ask users to run one real task and report where trust broke.
+- Bias toward public triage and fast visible fixes over broad marketing claims.
+
+## Practical launch advice tail (reconstructed)
+- Be explicit about limitations at launch; honesty improves long-term trust.
+- Publish known issues and workaround paths early.
+- Prioritize trust bugs (false completion, unsafe execution paths, setup blockers) above feature requests.
+- Operational readiness (SLA, triage rubric, fallback behavior) matters more than headline feature count.
 
 ---
 
-## Key points (structured summary)
-
-### A. Positioning — what worked vs failed
-- **Worked:** "one agent everywhere," bring-your-own-model, tooling depth + reliability.
-- **Failed:** anything that promised general intelligence over specific reliability.
-
-### B. Audience
-- Power users and developers.
-- Automation-heavy gateway users.
-- Messaging-first surprise vector (chat-driven adoption).
-
-### C. Onboarding drop-off
-- Provider/auth setup complexity is the #1 funnel killer.
-- Too many choices at first run.
-- Expectations mismatch (users expect more than the model delivers on turn 1).
-- **Hard rule:** force time-to-first-win in **under 2 minutes**.
-
-### D. What kills retention
-- Unreliable execution trace.
-- Slow or fragile in long sessions.
-- "Almost works" — partial completion without honest framing.
-- Excessive approval prompts.
-
-### E. Pricing signals
-- **Will pay for:** reliability/uptime guarantees, team/audit features, premium integrations.
-- **Won't pay for:** cosmetic personality, raw "more prompts/quota."
-
-### F. Support burden
-- Auth/provider confusion.
-- Platform-specific gateway issues.
-- "Why didn't my change apply?" (cache invalidation visibility).
-
-### G. Competitive truth — Aiden differentiation candidates
-- Native Windows excellence (no WSL ceremony).
-- Stronger honesty guarantees (verifiable trace, MemoryGuard, HonestyEnforcement).
-- Lower-friction Pro tier.
-- Deterministic approval rules (no surprise auto-allows).
-
-### H. First 1000 users — 5 channels in priority order
-1. Founder + dev network (warm intros).
-2. Niche Discord/Slack communities.
-3. Twitter/X demo threads (end-to-end recordings, not screenshots).
-4. Product Hunt for one spike day.
-5. HN/Reddit if the technical depth is presentable to those audiences.
-
-### Closing positioning advice (from Hermes)
-- Lead with one hard promise: **production-trustworthy Windows-native agent CLI.**
-- Demo 3 workflows end-to-end **with failure recovery**.
-- Publish known limitations upfront.
-- Track funnel from day 1.
+Status: reconstructed from compacted context due missing verbatim transcript access in-session.

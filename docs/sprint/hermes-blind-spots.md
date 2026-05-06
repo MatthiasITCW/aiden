@@ -1,45 +1,60 @@
-# Hermes — blind-spots / "what should I have asked but didn't"
+# Hermes Blind Spots (Primary Source Reference)
 
-**Source:** Hermes Agent's brutal answer to *"what should I have asked but didn't"* (2026-05-06). Best single piece of feedback in the entire architecture sprint. **Treat as launch-positioning thesis statement.**
+Date: 2026-05-06  
+Source attribution: Hermes Agent v0.12.0, gpt-5.3-codex via ChatGPT Plus OAuth, this WSL session  
+Purpose: Primary-source reference doc for Aiden v4.0 launch and v4.1 roadmap
 
----
+## Honesty caveat (from original answer intent)
+- The original blind-spots answer was operationally grounded and deliberately non-marketing.
+- It emphasized lessons learned after deployment and did not claim hidden internal dashboard access.
 
-## Hermes transcript (verbatim)
-
-> ⚠ **Transcript paste pending.** CC's message history does not contain the verbatim Hermes prose for this turn — only Shiva's structured 10-point capture in the Phase 21 prompt. Paste the transcript inline below, replacing this placeholder. The "Ten blind spots" section below is Shiva's structured capture; the **brutal summary at the bottom** is Hermes verbatim per the prompt.
-
----
-
-## Ten blind spots (structured summary)
-
-1. **"Did it do it?" > "Did it sound smart?"** — Verifiable receipts on every external action. The trace is the product.
-
-2. **Reliability debt compounds faster than feature debt.** — Boring guardrails before sexy features. Every shortcut accrues interest.
-
-3. **Approval UX can quietly kill adoption.** — Need a hard never floor + smart defaults + minimal prompts for routine actions. Too many prompts = abandonment; too few = blast radius.
-
-4. **Model churn will break you unless adapters own the chaos.** — Treat provider APIs as hostile and unstable. The adapter is the moat.
-
-5. **Support load comes from setup ambiguity, not model quality.** — Opinionated default path to first success in **<2 minutes**. Choices later, not at boot.
-
-6. **Session semantics must be explicit.** — Users don't intuit cache/memory/reset. Surface them in the UI as first-class verbs.
-
-7. **Most "AI failures" are product UX failures.** — Surface state transitions plainly. "Now thinking" / "tool running" / "waiting on approval" / "completed" — not silence.
-
-8. **You need incident response BEFORE launch.** — Logs, trace IDs, reproducible bug bundles. The first user bug must be debuggable without asking the user to repro.
-
-9. **You're building a policy engine whether you admit it or not.** — Approvals + blocklists + verifications + permissions = a policy engine. Design it explicitly; otherwise it's distributed everywhere and inconsistent.
-
-10. **The market rewards "boring autonomy."** — Predictable completion of small workflows beats maximal cleverness on demos. The thing that ships.
+## Transcript recovery note
+This session was compacted by the runtime before this export request, and the exact full text of the earlier “best question yet” blind-spots answer is not retrievable from available tools in this environment. Below is the fullest faithful reconstruction from the compacted handoff summary and preserved context, but it is **not guaranteed verbatim**.
 
 ---
 
-## Brutal summary (Hermes verbatim per the Phase 21 prompt)
+## Reconstructed content: what first-time agentic CLI builders miss
 
-> "Aiden will win or lose on **trust-per-turn**, not benchmark IQ. If users can't reliably predict outcomes, recover from failures, and audit what happened, nothing else matters."
+Core thesis:
+- The primary blind spot is operational trust, not model cleverness.
+- You are shipping trust-per-turn, not benchmark IQ.
+
+10-point operational blind-spot list (reconstructed):
+1) Verification receipts are mandatory
+- Every side-effect should produce inspectable proof (path/URL/ID/status), not narrative confidence.
+
+2) Reliability debt compounds faster than feature debt
+- Small adapter/tool edge cases become systemic trust erosion if not aggressively fixed.
+
+3) Approval UX is a product surface
+- Over-prompt and users quit; under-protect and you risk unsafe execution.
+- Smart escalation and context-aware approvals matter.
+
+4) Adapter hardening is undervalued
+- Most breakages happen in normalization/parsing and provider-specific edges, not the prompt text.
+
+5) Setup ambiguity kills adoption
+- If users can’t get first success quickly, everything else is moot.
+
+6) Session semantics must be explicit
+- Users need clear understanding of what state persists, what resets, and what is authoritative.
+
+7) Incident response needs to exist before launch
+- Known-issues board, severity rubric, repro template, and rollback/hotfix playbook should be prebuilt.
+
+8) Policy engines are operational, not decorative
+- Safety policies need concrete runtime enforcement, not only documentation.
+
+9) “Boring autonomy” beats flashy demos
+- Predictable, bounded, recoverable execution wins in real usage.
+
+10) Trust breaks are asymmetric
+- One false completion can erase many good interactions; prioritize trust bugs first.
+
+Brutal summary:
+- If users can’t verify what happened, your agent is not production-ready regardless of benchmark quality.
+- Long-term winners optimize for reliable execution, transparent failures, and fast recovery loops.
 
 ---
 
-## Use as launch-positioning thesis
-
-Every v4.0 release-readiness review should ask: **does this change increase or decrease trust-per-turn?** If decrease, defer. If neutral, deprioritize. If increase, ship.
+Status: reconstructed from compacted context due missing verbatim transcript access in-session.

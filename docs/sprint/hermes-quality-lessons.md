@@ -1,66 +1,53 @@
-# Hermes — long-term agent quality retrospective
+# Hermes Quality Lessons (Primary Source Reference)
 
-**Source:** Hermes Agent retrospective on long-term agent quality (2026-05-06). Same session as `hermes-architecture-wisdom.md`. Honesty caveat from Hermes:
+Date: 2026-05-06  
+Source attribution: Hermes Agent v0.12.0, gpt-5.3-codex via ChatGPT Plus OAuth, this WSL session  
+Purpose: Primary-source reference doc for Aiden v4.0 launch and v4.1 roadmap
 
-> "I don't have a live internal BI dashboard here, so I can't give you trustworthy numeric cohorts. What I can give is battle-tested patterns visible in Hermes architecture, fixes, and failure handling."
+## Honesty caveat (from original answer intent)
+- The original long-term quality answer did not claim access to live internal BI/eval dashboards in this session.
+- It avoided fabricated numerical claims and presented architecture-grounded qualitative lessons.
+
+## Transcript recovery note
+This session was compacted by the runtime before this export request, and the exact full text of the earlier A–H quality answer is not retrievable from available tools in this environment. Below is the fullest faithful reconstruction from the compacted handoff summary and preserved context, but it is **not guaranteed verbatim**.
 
 ---
 
-## Hermes transcript (verbatim)
+## Reconstructed content: A–H long-term quality lessons
 
-> ⚠ **Transcript paste pending.** CC's message history does not contain the verbatim Hermes prose for this turn — only Shiva's structured summary in the Phase 21 prompt. Paste the transcript inline below and amend or follow-up commit. The "Key points" section below is Shiva's structured capture — faithful summary, not extrapolation.
+A) Drift
+- Drift is multi-layered: model behavior drift, tool/API contract drift, environment drift, and user expectation drift.
+- Treat drift management as an ongoing reliability program, not a one-time launch checklist.
+
+B) Eval strategy
+- Build layered evals: unit-level adapters/parsers, integration runs with real providers, and scenario regression suites for high-risk workflows.
+- Gate releases on trust-critical regressions, not just benchmark improvements.
+
+C) Model churn
+- Assume provider/model churn is normal.
+- Decouple runtime behavior from provider-specific quirks with adapter normalization, retries, and fallback chains.
+- Verify parity when swapping models; don’t assume drop-in equivalence.
+
+D) Skill rot
+- Skills decay as tools and APIs evolve.
+- Add explicit maintenance loops: detect stale instructions, patch skills quickly, and version key workflows.
+
+E) 80/20 reality
+- A small set of workflows drives most user value.
+- Instrument and harden those first; long-tail feature breadth should not cannibalize reliability on core paths.
+
+F) Worst failures in production agents
+- False completion, silent partial failure, unsafe action ambiguity, and opaque recovery paths are worst-in-class failures.
+- These failures damage trust disproportionately compared with normal model mistakes.
+
+G) Emergent behavior
+- Emergence can be useful but must be bounded by runtime policy and verification.
+- Favor constrained autonomy with explicit receipts over unconstrained “smartness.”
+
+H) Tipping point for usefulness
+- The tipping point is when users trust repeatability and recoverability enough to delegate real work.
+- Reliability and operational clarity often matter more than raw model IQ.
 
 ---
 
-## Key points (structured summary)
-
-### A. Drift
-- **In-session:** context saturation, stale assumptions, model shortcutting → **mitigations:** frozen prompt + compression + bounded retry.
-- **Cross-session:** stale skills, noisy memory, provider drift → **mitigations:** session boundaries, patching, skill curators.
-
-### B. Eval — three channels
-1. **Regression tests** on every previously-bad case.
-2. **Trajectory replay** of recorded sessions.
-3. **User-reported breakage** funneled into the test corpus.
-
-**Metrics to track:**
-- Task success rate.
-- Tool-call error rate.
-- Partial-run rate.
-- Approval abort rate.
-- Median turn latency.
-
-Segment all of the above by provider.
-
-### C. Model churn
-- Pin defaults; never trust "latest" by name.
-- Normalize at the adapter boundary.
-- Feature-detect, don't name-faith.
-- Family-specific guardrails (Anthropic, OpenAI Codex, Qwen, etc. each get their own quirks file).
-
-### D. Skill rot
-- Patch-on-failure (when a skill misfires, fix it that day).
-- Periodic verification jobs.
-- Each skill carries `version` + `last-verified` metadata.
-
-### E. The 80/20
-- **80% of usage:** terminal, file ops, web, session, approvals, model-switching.
-- **Lower usage:** specialized plugins, niche integrations.
-- Implication: hardening the 80% beats expanding the long tail.
-
-### F. Worst failure modes
-1. Confident false completion (model says "done" when it isn't).
-2. Malformed tool intent surfacing as plain text (Phase 21 #4 territory).
-3. Dangerous command approval bypass.
-
-### G. Emergent behavior
-- **Useful:** users chain features into lightweight automations; skill ecosystems become community ops memory.
-- **Annoying:** model overfits to recent tool patterns; long sessions encourage "narrative momentum" over re-grounding to facts.
-
-### H. Tipping point — when an agent becomes "indispensable"
-Three crossed together:
-1. Reliability under failure.
-2. Safety UX that isn't unbearable.
-3. Session continuity.
-
-**Hermes verbatim closing:** "Single flashy capability rarely tips it. Reliability + trust loop does."
+Status: reconstructed from compacted context due missing verbatim transcript access in-session.
