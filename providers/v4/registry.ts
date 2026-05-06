@@ -110,7 +110,21 @@ export const PROVIDER_REGISTRY: Record<string, ProviderRegistryEntry> = {
     hasFreeTier: false,
     docsUrl: 'https://platform.openai.com/docs/',
     supportsToolCalling: true,
-    modelIds: ['gpt-5', 'gpt-5-mini', 'gpt-5-codex'],
+    // Phase 21 #6: Hermes-verified Codex slugs (Apr 2026 probe of
+    // chatgpt.com/backend-api/codex/models). Direct OpenAI API names
+    // (gpt-5-mini, gpt-5-codex) are NOT valid here — Codex OAuth has
+    // its own slug taxonomy.
+    modelIds: [
+      'gpt-5.1-codex-max',
+      'gpt-5.1-codex-mini',
+      'gpt-5.3-codex',
+      'gpt-5.2-codex',
+      'gpt-5.5',
+      'gpt-5.4',
+      'gpt-5.4-mini',
+      'gpt-5.2',
+      'gpt-5',
+    ],
   },
   nous_portal: {
     id: 'nous_portal',

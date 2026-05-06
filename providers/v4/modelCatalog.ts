@@ -102,9 +102,18 @@ export const MODEL_CATALOG: ModelEntry[] = [
   },
 
   // ─── chatgpt-plus (Phase 18 OAuth) ───────────────────────────────────────
+  // Phase 21 #6: model IDs verbatim from Hermes
+  // `agent/model_metadata.py:_CODEX_OAUTH_CONTEXT_FALLBACK` (live probe of
+  // chatgpt.com/backend-api/codex/models, Apr 2026). The Codex OAuth
+  // endpoint requires its own slug list — the plain OpenAI API names
+  // (`gpt-5`, `gpt-5-mini`, `gpt-5-codex`) get rejected with HTTP 400
+  // "model is not supported when using Codex with a ChatGPT account"
+  // for many accounts. The slugs below are the authoritative list. v4.1
+  // will replace this hardcode with a live `/codex/models` probe per
+  // Hermes (`_fetch_codex_oauth_context_lengths`).
   {
-    id: 'gpt-5',
-    displayName: 'GPT-5',
+    id: 'gpt-5.1-codex-max',
+    displayName: 'GPT-5.1 Codex Max',
     providerId: 'chatgpt-plus',
     contextLength: 272_000,
     maxOutputTokens: 32_000,
@@ -113,11 +122,11 @@ export const MODEL_CATALOG: ModelEntry[] = [
     supportsReasoning: true,
     isDefault: true,
     tier: 'flagship',
-    notes: 'Routed through ChatGPT Plus OAuth (chatgpt.com/backend-api/codex).',
+    notes: 'Routed through ChatGPT Plus OAuth (chatgpt.com/backend-api/codex). Hermes-verified slug.',
   },
   {
-    id: 'gpt-5-mini',
-    displayName: 'GPT-5 Mini',
+    id: 'gpt-5.1-codex-mini',
+    displayName: 'GPT-5.1 Codex Mini',
     providerId: 'chatgpt-plus',
     contextLength: 272_000,
     maxOutputTokens: 32_000,
@@ -128,8 +137,8 @@ export const MODEL_CATALOG: ModelEntry[] = [
     tier: 'small',
   },
   {
-    id: 'gpt-5-codex',
-    displayName: 'GPT-5 Codex',
+    id: 'gpt-5.3-codex',
+    displayName: 'GPT-5.3 Codex',
     providerId: 'chatgpt-plus',
     contextLength: 272_000,
     maxOutputTokens: 32_000,
@@ -138,7 +147,80 @@ export const MODEL_CATALOG: ModelEntry[] = [
     supportsReasoning: true,
     isDefault: false,
     tier: 'flagship',
-    notes: 'Coding-tuned variant — accessed via ChatGPT Plus OAuth.',
+  },
+  {
+    id: 'gpt-5.2-codex',
+    displayName: 'GPT-5.2 Codex',
+    providerId: 'chatgpt-plus',
+    contextLength: 272_000,
+    maxOutputTokens: 32_000,
+    supportsToolCalling: true,
+    supportsVision: true,
+    supportsReasoning: true,
+    isDefault: false,
+    tier: 'flagship',
+  },
+  {
+    id: 'gpt-5.5',
+    displayName: 'GPT-5.5',
+    providerId: 'chatgpt-plus',
+    contextLength: 272_000,
+    maxOutputTokens: 32_000,
+    supportsToolCalling: true,
+    supportsVision: true,
+    supportsReasoning: true,
+    isDefault: false,
+    tier: 'flagship',
+    notes: 'Codex caps context at 272K; direct OpenAI API serves 1.05M for the same slug.',
+  },
+  {
+    id: 'gpt-5.4',
+    displayName: 'GPT-5.4',
+    providerId: 'chatgpt-plus',
+    contextLength: 272_000,
+    maxOutputTokens: 32_000,
+    supportsToolCalling: true,
+    supportsVision: true,
+    supportsReasoning: true,
+    isDefault: false,
+    tier: 'standard',
+  },
+  {
+    id: 'gpt-5.4-mini',
+    displayName: 'GPT-5.4 Mini',
+    providerId: 'chatgpt-plus',
+    contextLength: 272_000,
+    maxOutputTokens: 32_000,
+    supportsToolCalling: true,
+    supportsVision: false,
+    supportsReasoning: true,
+    isDefault: false,
+    tier: 'small',
+  },
+  {
+    id: 'gpt-5.2',
+    displayName: 'GPT-5.2',
+    providerId: 'chatgpt-plus',
+    contextLength: 272_000,
+    maxOutputTokens: 32_000,
+    supportsToolCalling: true,
+    supportsVision: true,
+    supportsReasoning: true,
+    isDefault: false,
+    tier: 'standard',
+  },
+  {
+    id: 'gpt-5',
+    displayName: 'GPT-5',
+    providerId: 'chatgpt-plus',
+    contextLength: 272_000,
+    maxOutputTokens: 32_000,
+    supportsToolCalling: true,
+    supportsVision: true,
+    supportsReasoning: true,
+    isDefault: false,
+    tier: 'standard',
+    notes: 'Base GPT-5; some Codex accounts entitle only the *-codex variants. If 400-rejected, switch to gpt-5.1-codex-max.',
   },
 
   // ─── nous_portal ─────────────────────────────────────────────────────────

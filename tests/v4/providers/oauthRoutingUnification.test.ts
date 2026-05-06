@@ -78,11 +78,27 @@ describe('Phase 21 #5 — OAuth provider routing unification', () => {
     );
   });
 
-  it('5. chatgpt-plus catalog absorbed gpt-5-codex from the legacy stub', () => {
+  it('5. chatgpt-plus catalog uses Hermes-verified Codex slugs (Phase 21 #6)', () => {
+    // Phase 21 #6: gpt-5-mini and gpt-5-codex were never valid on the
+    // Codex OAuth endpoint — they're direct OpenAI API names. The
+    // canonical list below is verbatim from Hermes
+    // agent/model_metadata.py:_CODEX_OAUTH_CONTEXT_FALLBACK.
     const ids = listModelsForProvider('chatgpt-plus').map((m) => m.id);
     expect(ids).toEqual(
-      expect.arrayContaining(['gpt-5', 'gpt-5-mini', 'gpt-5-codex']),
+      expect.arrayContaining([
+        'gpt-5.1-codex-max',
+        'gpt-5.1-codex-mini',
+        'gpt-5.3-codex',
+        'gpt-5.2-codex',
+        'gpt-5.5',
+        'gpt-5.4',
+        'gpt-5.4-mini',
+        'gpt-5.2',
+        'gpt-5',
+      ]),
     );
+    expect(ids).not.toContain('gpt-5-mini');
+    expect(ids).not.toContain('gpt-5-codex');
   });
 
   it('6. /model switch to chatgpt-plus reads the bearer from tokenStore (not auth.json)', async () => {

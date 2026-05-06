@@ -62,6 +62,37 @@ silently.
 the same. Both call sites are covered. Cross-call integration tests
 were added to catch future regressions — the original parity tests
 verified registry shape only and would not have caught this.
+
+## Codex model IDs appendix (Phase 21 #6)
+
+After bug #5 routing was unblocked, the user got an OpenAI 400 on
+inference: *"The 'gpt-5' model is not supported when using Codex with
+a ChatGPT account."* The Codex OAuth endpoint
+(`chatgpt.com/backend-api/codex/responses`) has its own model slug
+taxonomy distinct from the direct `api.openai.com` names. Hermes
+canonical list (`agent/model_metadata.py:_CODEX_OAUTH_CONTEXT_FALLBACK`,
+verified Apr 2026 via live `/codex/models` probe):
+
+| Slug | Context | Notes |
+|---|---|---|
+| `gpt-5.1-codex-max` | 272K | Flagship, recommended default |
+| `gpt-5.1-codex-mini` | 272K | Small / fast |
+| `gpt-5.3-codex` | 272K | |
+| `gpt-5.2-codex` | 272K | |
+| `gpt-5.5` | 272K | Direct API serves 1.05M; Codex caps at 272K |
+| `gpt-5.4` | 272K | |
+| `gpt-5.4-mini` | 272K | |
+| `gpt-5.2` | 272K | |
+| `gpt-5` | 272K | Base; some accounts entitle only `*-codex` variants |
+
+Hermes does a live `/codex/models?client_version=1.0.0` probe at
+runtime (`_fetch_codex_oauth_context_lengths`, 1h cache) and falls
+back to the table above. Aiden v4.0 hardcodes the table; live probe
+ports to v4.1.
+
+The names `gpt-5-mini` and `gpt-5-codex` (as we previously listed)
+are NOT valid Codex slugs — they're OpenAI direct-API names that
+look similar but the Codex backend rejects them.
 Adopt Hermes pattern. Aiden has **two parallel registry entries per OAuth service** today (`claude_subscription` + `claude-pro`, `chatgpt_subscription` + `chatgpt-plus`). The legacy snake_case stubs lack `oauth.providerId`; selecting them through the picker routes credentials through the deprecated `auth.json` `credentialResolver` path which has no fresh tokenStore awareness.
 
 The fix is **deletion**, not aliasing. A single canonical entry per service; remove the stubs entirely. This matches Hermes one-name-per-service and eliminates the divergence at its root.

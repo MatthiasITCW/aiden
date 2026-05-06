@@ -591,8 +591,10 @@ export async function buildAgentRuntime(
     // Phase 21 #5: ensure the auxiliary path also honors entry.oauth →
     // tokenStore. If a user runs the auxiliary cheap LLM through an
     // OAuth-only provider, omitting `paths` would skip the fast-path
-    // and surface the same auth.json error as /model.
-    resolver: { resolve: (o) => resolver.resolve({ ...o, paths: o.paths ?? paths }) },
+    // and surface the same auth.json error as /model. The auxiliary
+    // resolver type doesn't surface a paths field, so we always inject
+    // the boot-resolved paths here.
+    resolver: { resolve: (o) => resolver.resolve({ ...o, paths }) },
   });
 
   // CLI callbacks. Approval engine is stitched up after construction
