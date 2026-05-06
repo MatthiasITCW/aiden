@@ -15,6 +15,29 @@ Resolve "play X" / "listen to X" / "find me a song" requests by chaining
 hears the song in their default browser without you having to drive a
 controlled browser session.
 
+## REQUIRED tool sequence (read this first)
+
+Every successful run of this skill calls **exactly two** tools, in order:
+
+1. `web_search` — exactly **once**.
+2. `open_url` — exactly **once** (with a `youtube.com/watch?v=` URL).
+
+Then you report. **A run that stops after `web_search` is a FAILED run** —
+the user does not hear anything until `open_url` fires. Do NOT report
+"I found the song" or "now playing" without calling `open_url` first;
+that is a fabrication this skill specifically exists to prevent.
+
+Anti-patterns the planner sometimes drifts into — do NOT do these:
+
+- ❌ Calling `web_search` twice "to be sure" — pick the first
+  `/watch?v=` URL from the first call and move on.
+- ❌ Re-entering the `media_search` skill mid-run after `web_search`
+  returned. The skill is already loaded; re-viewing it wastes a turn
+  and signals a hung agent. Just call `open_url`.
+- ❌ Stopping after the search and asking the user to confirm. The
+  user's "play me a song" request is the consent — proceed to
+  `open_url`.
+
 ## When to use
 
 The user's request matches any of these patterns:
@@ -33,14 +56,16 @@ piece, that's an `open_url` direct call — not this skill.
 
 ### Specific song or video (artist + title given)
 
-1. `web_search` for `<title> youtube watch` (the literal `youtube watch`
-   keywords bias results toward YouTube `/watch?v=` URLs).
-2. Pick the FIRST result whose URL contains `youtube.com/watch?v=`.
-   Skip channel pages, playlists, and `/results?` URLs — they don't
-   autoplay reliably.
-3. `open_url` that watch URL exactly **once**. YouTube's `/watch?v=`
-   pages autoplay in the user's browser (no click needed).
-4. Report: "Now playing: `<video title>` — `<url>`"
+1. **CALL `web_search`** for `<title> youtube watch` (the literal
+   `youtube watch` keywords bias results toward YouTube `/watch?v=` URLs).
+2. **PARSE the search results** — find the FIRST result whose URL
+   contains `youtube.com/watch?v=`. Skip channel pages, playlists, and
+   `/results?` URLs — they don't autoplay reliably. This is a parse
+   step inside your reasoning; it does not call any tool.
+3. **CALL `open_url`** with that watch URL — exactly once. YouTube's
+   `/watch?v=` pages autoplay in the user's browser (no click needed).
+   This step is REQUIRED. Do not skip it.
+4. **Report**: "Now playing: `<video title>` — `<url>`"
 
 ### Fuzzy intent (no specific title)
 
