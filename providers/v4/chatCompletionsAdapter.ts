@@ -1,36 +1,50 @@
 /**
- * Copyright (c) 2026 Shiva Deore (Taracod).
- * Licensed under AGPL-3.0. See LICENSE for details.
+ * Aiden v4 — local-first AI agent
+ * Copyright (C) 2026 Shiva Deore (Taracod)
  *
- * Aiden — local-first agent.
- *
- * Portions adapted from NousResearch/hermes-agent (MIT).
- * Original copyright (c) NousResearch.
+ * Licensed under AGPL-3.0-or-later. See LICENSE.
  */
 /**
- * providers/v4/chatCompletionsAdapter.ts — Aiden v4.0.0
+ * providers/v4/chatCompletionsAdapter.ts
  *
- * Adapter for the OpenAI-style /v1/chat/completions wire format.
+ * Speaks the OpenAI Chat Completions wire format on behalf of every
+ * provider Aiden routes through `apiMode === 'chat_completions'` —
+ * Together AI, Groq, OpenRouter, Cerebras, NVIDIA NIM, Gemini compat,
+ * DeepSeek, xAI, Kimi, and any other endpoint that implements the
+ * `/v1/chat/completions` spec.
  *
- * Covers (single adapter, swap baseUrl/model/key):
- *   - Groq                (api.groq.com/openai/v1)
- *   - OpenRouter          (openrouter.ai/api/v1)              + extraHeaders
- *   - Together            (api.together.xyz/v1)
- *   - Gemini compat       (generativelanguage.googleapis.com/v1beta/openai)
- *   - Cerebras, NVIDIA NIM, DeepSeek, xAI, Kimi, custom OAI-spec endpoints
+ * Six wire-format quirks the adapter normalises:
+ *   1. `tool_calls[].function.arguments` is a JSON STRING — parsed; bad
+ *      JSON falls back to `{}` so the agent loop sees a stable shape.
+ *   2. `choices[0].message.content` may be null when the model emitted
+ *      only tool calls. Returned as null in Aiden's shape so callers can
+ *      distinguish "no message" from "empty message".
+ *   3. `finish_reason: 'tool_calls'` (plural) → Aiden `'tool_use'` (singular).
+ *   4. Tools wrapped as `{type:'function', function:{name,description,parameters}}`.
+ *   5. Usage map: `prompt_tokens` → `inputTokens`, `completion_tokens` → `outputTokens`.
+ *   6. Many providers reject >1 system message at the head of the
+ *      conversation — fold them into one before sending.
  *
- * Status: PHASE 3 — non-streaming only. Streaming lands Phase 13.
+ * Plus a Groq-specific recovery: when Groq's strict tool surface 400s
+ * with `tool_use_failed`, the body's `failed_generation` often contains
+ * the model's intended tool call in a `<function=name(...)>` legacy
+ * syntax. We parse that and synthesise a real tool_call response rather
+ * than propagate the 400 — the agent loop runs the tool and the
+ * conversation continues.
  *
- * Wire-format quirks handled here:
- *   1. tool_calls[].function.arguments is a JSON STRING — parsed; falls back to {} on bad JSON.
- *   2. choices[0].message.content can be null when only tool_calls present.
- *   3. finish_reason 'tool_calls' (plural) → v4 'tool_use' (singular).
- *   4. Tools wrapped as {type:'function', function:{name, description, parameters}}.
- *   5. Usage is prompt_tokens / completion_tokens (mapped to inputTokens / outputTokens).
- *   6. Multiple system messages at the head get concatenated (some providers reject >1).
+ * Streaming notes:
+ *   - `stream_options: { include_usage: true }` is sent on every
+ *     streaming request. Several providers (Groq, Together's Qwen
+ *     endpoint) rely on this to emit a final usage-bearing chunk and
+ *     close the stream promptly; without it some hold the connection
+ *     open longer than necessary.
+ *   - Mid-stream provider error frames (`{"error":...}`) are surfaced as
+ *     retryable `ProviderError` so the FallbackAdapter advances slots.
+ *     OpenRouter and Groq both deliver errors this way for transient
+ *     issues.
  */
 
-import {
+import type {
   ApiMode,
   Message,
   ProviderAdapter,
@@ -46,119 +60,961 @@ import {
   ProviderTimeoutError,
 } from './errors';
 
+// ── Public options ──────────────────────────────────────────────────────
+
 export interface ChatCompletionsAdapterOptions {
-  /** Full base URL (no trailing slash), e.g. 'https://api.groq.com/openai/v1' */
-  baseUrl: string;
-  /** Bearer token. */
-  apiKey: string;
-  /** Provider-specific model identifier, e.g. 'llama-3.3-70b-versatile'. */
-  model: string;
-  /** Provider name for error messages and logging. */
-  providerName: string;
-  /** Per-request timeout in ms. Default 120_000. */
-  timeoutMs?: number;
-  /** Max retries on transient errors (429, 5xx). Default 2 (so 3 attempts total). */
-  maxRetries?: number;
-  /** Extra headers (e.g. OpenRouter requires `HTTP-Referer` + `X-Title`). */
-  extraHeaders?: Record<string, string>;
+  /** Full base URL with no trailing slash, e.g. `https://api.groq.com/openai/v1`. */
+  baseUrl:        string;
+  apiKey:         string;
+  model:          string;
+  /** Used for error messages and traces. */
+  providerName:   string;
+  /** Per-request wall-clock. Default 120_000 ms. */
+  timeoutMs?:     number;
+  /** Retries on 429/5xx/network. Default 2 (so 3 attempts total). */
+  maxRetries?:    number;
+  /** Header overrides — wins over computed headers. e.g. OpenRouter wants HTTP-Referer + X-Title. */
+  extraHeaders?:  Record<string, string>;
 }
 
-interface OpenAITool {
-  type: 'function';
-  function: {
-    name: string;
-    description: string;
-    parameters: ToolSchema['inputSchema'];
-  };
+// ── Constants ───────────────────────────────────────────────────────────
+
+const DEFAULT_TIMEOUT_MS  = 120_000;
+const DEFAULT_MAX_RETRIES = 2;
+const DEFAULT_MAX_TOKENS  = 4096;
+const BACKOFF_BASE_MS     = 1000;
+
+// ── Wire types (private, narrow on purpose) ─────────────────────────────
+
+interface WireToolFunction {
+  type:     'function';
+  function: { name: string; description: string; parameters: ToolSchema['inputSchema'] };
 }
 
-interface OpenAIToolCall {
-  id: string;
-  type: 'function';
-  function: {
-    name: string;
-    arguments: string;
-  };
+interface WireToolCall {
+  id:        string;
+  type:      'function';
+  function:  { name: string; arguments: string };
+  /** Streaming chunks carry an index; non-streaming responses do not. */
+  index?:    number;
 }
 
-interface OpenAIMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
-  tool_calls?: OpenAIToolCall[];
-  tool_call_id?: string;
+interface WireMessage {
+  role:           'system' | 'user' | 'assistant' | 'tool';
+  content:        string | null;
+  tool_calls?:    WireToolCall[];
+  tool_call_id?:  string;
 }
 
-interface OpenAIChoice {
+interface WireChoice {
   message: {
-    role: string;
-    content: string | null;
-    tool_calls?: OpenAIToolCall[];
+    role:         string;
+    content:      string | null;
+    tool_calls?:  WireToolCall[];
   };
   finish_reason: string | null;
 }
 
-interface OpenAIResponse {
-  choices: OpenAIChoice[];
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    cache_read_input_tokens?: number;
+interface WireResponse {
+  choices: WireChoice[];
+  usage?:  {
+    prompt_tokens?:               number;
+    completion_tokens?:           number;
+    /** Anthropic-style cache fields some OAI-compat providers include. */
+    cache_read_input_tokens?:     number;
     cache_creation_input_tokens?: number;
   };
 }
 
-/**
- * Phase 16c: shape of a single SSE chunk on /v1/chat/completions.
- * `delta` carries incremental content/tool_calls, `usage` only appears
- * in the final chunk when `stream_options.include_usage=true` was set.
- */
-interface SseChunk {
-  choices?: Array<{
-    delta?: {
-      content?: string;
-      role?: string;
-      tool_calls?: Array<{
-        index?: number;
-        id?: string;
-        function?: { name?: string; arguments?: string };
-      }>;
-    };
-    finish_reason?: string | null;
-  }>;
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
-  error?: { message?: string; code?: string | number };
+interface WireRequestBody {
+  model:           string;
+  messages:        WireMessage[];
+  max_tokens:      number;
+  tools?:          WireToolFunction[];
+  tool_choice?:    'auto';
+  temperature?:    number;
+  stream?:         boolean;
+  stream_options?: { include_usage?: boolean };
+  [extra: string]: unknown;
 }
 
-const DEFAULT_TIMEOUT_MS = 120_000;
-const DEFAULT_MAX_RETRIES = 2;
+// ── Adapter ─────────────────────────────────────────────────────────────
+
+export class ChatCompletionsAdapter implements ProviderAdapter {
+  readonly apiMode: ApiMode = 'chat_completions';
+
+  private readonly endpoint:     string;
+  private readonly apiKey:       string;
+  private readonly model:        string;
+  private readonly providerName: string;
+  private readonly timeoutMs:    number;
+  private readonly maxRetries:   number;
+  private readonly extraHeaders: Record<string, string>;
+
+  constructor(opts: ChatCompletionsAdapterOptions) {
+    const baseUrl = opts.baseUrl.replace(/\/+$/, '');
+    this.endpoint     = `${baseUrl}/chat/completions`;
+    this.apiKey       = opts.apiKey;
+    this.model        = opts.model;
+    this.providerName = opts.providerName;
+    this.timeoutMs    = opts.timeoutMs  ?? DEFAULT_TIMEOUT_MS;
+    this.maxRetries   = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
+    this.extraHeaders = opts.extraHeaders ?? {};
+  }
+
+  // ── Non-streaming ────────────────────────────────────────────────────
+
+  async call(input: ProviderCallInput): Promise<ProviderCallOutput> {
+    const body  = this.buildBody(input, /* streaming */ false);
+    const reply = await this.dispatch(body, /* streaming */ false);
+    const text  = await reply.text();
+    let parsed: WireResponse;
+    try {
+      parsed = JSON.parse(text) as WireResponse;
+    } catch {
+      throw new ProviderError(
+        `Provider ${this.providerName} returned non-JSON body`,
+        this.providerName,
+        reply.status,
+        text,
+        false,
+      );
+    }
+    return decodeChoice(parsed);
+  }
+
+  // ── Streaming ────────────────────────────────────────────────────────
+
+  async *callStream(input: ProviderCallInput): AsyncGenerator<StreamEvent, void, void> {
+    const body  = this.buildBody(input, /* streaming */ true);
+    const reply = await this.dispatch(body, /* streaming */ true);
+    if (!reply.body) {
+      yield {
+        type: 'done',
+        output: {
+          content:      '',
+          toolCalls:    [],
+          finishReason: 'error',
+          usage:        { inputTokens: 0, outputTokens: 0 },
+        },
+      };
+      return;
+    }
+    yield* decodeStream(reply.body, this.providerName);
+  }
+
+  // ── Body assembly ────────────────────────────────────────────────────
+
+  private buildBody(input: ProviderCallInput, streaming: boolean): WireRequestBody {
+    const body: WireRequestBody = {
+      model:      this.model,
+      messages:   encodeMessages(input.messages),
+      max_tokens: input.maxTokens ?? DEFAULT_MAX_TOKENS,
+    };
+    if (input.tools && input.tools.length > 0) {
+      body.tools       = input.tools.map(toWireTool);
+      body.tool_choice = 'auto';
+    }
+    if (typeof input.temperature === 'number') body.temperature = input.temperature;
+    if (streaming) {
+      body.stream         = true;
+      // `include_usage: true` — what the OpenAI SDK sends by default.
+      // Several providers (Groq, Together's Qwen endpoint) hold the
+      // connection open longer when this flag is absent. Request usage so
+      // the stream closes promptly and we get accurate token accounting.
+      body.stream_options = { include_usage: true };
+    }
+    if (input.extraBody) Object.assign(body, input.extraBody);
+    return body;
+  }
+
+  // ── Network with retry/timeout ───────────────────────────────────────
+
+  private buildHeaders(streaming: boolean): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type':  'application/json',
+      'Authorization': `Bearer ${this.apiKey}`,
+    };
+    if (streaming) headers['Accept'] = 'text/event-stream';
+    return { ...headers, ...this.extraHeaders };
+  }
+
+  private async dispatch(body: WireRequestBody, streaming: boolean): Promise<Response> {
+    const headers    = this.buildHeaders(streaming);
+    const serialised = JSON.stringify(body);
+    const totalTries = this.maxRetries + 1;
+
+    let lastErr: unknown = null;
+
+    for (let attempt = 0; attempt < totalTries; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+
+      let response: Response;
+      try {
+        response = await fetch(this.endpoint, {
+          method:  'POST',
+          headers,
+          body:    serialised,
+          signal:  controller.signal,
+        });
+      } catch (err: any) {
+        clearTimeout(timer);
+        if (err?.name === 'AbortError') {
+          lastErr = new ProviderTimeoutError(this.providerName, this.timeoutMs);
+        } else {
+          lastErr = new ProviderError(
+            `Network failure calling ${this.providerName}: ${err?.message ?? err}`,
+            this.providerName,
+            undefined,
+            err,
+            true,
+          );
+        }
+        if (attempt < totalTries - 1) {
+          await sleep(backoffMs(attempt));
+          continue;
+        }
+        throw lastErr;
+      }
+      clearTimeout(timer);
+
+      if (response.ok) return response;
+
+      const status = response.status;
+
+      // Groq's `tool_use_failed` 400 sometimes carries the model's tool
+      // call inline in `failed_generation`. Recover it into a synthetic
+      // tool_use response instead of failing the turn. Only the
+      // non-streaming path reaches here with a body — the streaming
+      // path's 4xx already failed before the body would be relevant.
+      if (status === 400 && !streaming) {
+        const recoveredBody = await response.text();
+        const recovered = tryRecoverLegacyToolCall(recoveredBody);
+        if (recovered) {
+          return synthesiseRecoveredResponse(recovered);
+        }
+        throw new ProviderError(
+          `Provider ${this.providerName} returned 400 Bad Request`,
+          this.providerName,
+          400,
+          tryParseJson(recoveredBody),
+          false,
+        );
+      }
+
+      const raw = await safeReadBody(response);
+
+      if (status === 429) {
+        if (attempt < totalTries - 1) {
+          await sleep(backoffMs(attempt));
+          continue;
+        }
+        throw new ProviderRateLimitError(this.providerName, raw);
+      }
+
+      if (status >= 500 && status < 600) {
+        if (attempt < totalTries - 1) {
+          await sleep(backoffMs(attempt));
+          continue;
+        }
+        throw new ProviderError(
+          `Provider ${this.providerName} server error ${status}`,
+          this.providerName,
+          status,
+          raw,
+          true,
+        );
+      }
+
+      throw new ProviderError(
+        `Provider ${this.providerName} request failed (${status})`,
+        this.providerName,
+        status,
+        raw,
+        false,
+      );
+    }
+
+    throw lastErr instanceof Error
+      ? lastErr
+      : new ProviderError(`Provider ${this.providerName} failed after retries`, this.providerName);
+  }
+}
+
+// ── Encoders ────────────────────────────────────────────────────────────
+
+function toWireTool(t: ToolSchema): WireToolFunction {
+  return {
+    type:     'function',
+    function: { name: t.name, description: t.description, parameters: t.inputSchema },
+  };
+}
 
 /**
- * Phase 16b.2: detect Groq's `tool_use_failed` 400 — emitted when a
- * Llama-3.3 fine-tune emits the legacy `<function=name({args})>` syntax
- * instead of the OpenAI tool_calls envelope — and recover by parsing the
- * raw generation into a synthetic `ProviderCallOutput` with one tool call.
+ * Walk Aiden's flat `Message[]` into OpenAI's wire shape.
  *
- * Returns null when the response doesn't match the recovery shape, in
- * which case the caller falls through to the normal 400 throw.
+ *   - Multiple leading system messages get folded into a single
+ *     `{role:'system'}` entry — providers like Groq reject duplicates.
+ *   - Assistant turns with tool calls send `content: null` plus a
+ *     `tool_calls[]` array; arguments stringified per the spec.
+ *   - Tool replies translate to `{role:'tool', tool_call_id, content}`.
+ */
+function encodeMessages(messages: Message[]): WireMessage[] {
+  const out:        WireMessage[] = [];
+  const sysParts:   string[]      = [];
+
+  for (const msg of messages) {
+    if (msg.role === 'system') {
+      sysParts.push(msg.content);
+      continue;
+    }
+
+    if (out.length === 0 && sysParts.length > 0) {
+      out.push({ role: 'system', content: sysParts.join('\n\n') });
+      sysParts.length = 0;
+    }
+
+    if (msg.role === 'user') {
+      out.push({ role: 'user', content: msg.content });
+      continue;
+    }
+
+    if (msg.role === 'tool') {
+      out.push({
+        role:          'tool',
+        content:       msg.content,
+        tool_call_id:  msg.toolCallId,
+      });
+      continue;
+    }
+
+    // assistant
+    if (msg.toolCalls && msg.toolCalls.length > 0) {
+      out.push({
+        role:        'assistant',
+        content:     msg.content || null,
+        tool_calls:  msg.toolCalls.map((tc) => ({
+          id:        tc.id,
+          type:      'function',
+          function:  {
+            name:      tc.name,
+            arguments: JSON.stringify(tc.arguments ?? {}),
+          },
+        })),
+      });
+    } else {
+      out.push({ role: 'assistant', content: msg.content });
+    }
+  }
+
+  // System-only conversation — flush whatever accumulated.
+  if (out.length === 0 && sysParts.length > 0) {
+    out.push({ role: 'system', content: sysParts.join('\n\n') });
+  }
+
+  return out;
+}
+
+// ── Decoders ────────────────────────────────────────────────────────────
+
+function decodeChoice(reply: WireResponse): ProviderCallOutput {
+  const choice = reply.choices?.[0];
+  if (!choice) {
+    return {
+      content:      '',
+      toolCalls:    [],
+      finishReason: 'error',
+      usage:        decodeUsage(reply.usage),
+      raw:          reply,
+    };
+  }
+
+  const message       = choice.message ?? {} as WireChoice['message'];
+  const wireToolCalls = message.tool_calls ?? [];
+  // `content` may be `null` when the model emitted only tool calls. We
+  // preserve that null so the agent loop can distinguish "no message"
+  // from an empty string. Inline-tool recovery only fires on actual
+  // string content.
+  let contentText: string | null = message.content ?? null;
+  let toolCalls   = wireToolCalls.map(decodeToolCall);
+
+  if (typeof contentText === 'string' && contentText.length > 0
+      && toolCalls.length === 0) {
+    const inline = extractInlineToolCalls(contentText);
+    if (inline) {
+      contentText = inline.content;
+      toolCalls   = inline.toolCalls;
+    }
+  }
+
+  return {
+    content:      contentText,
+    toolCalls,
+    finishReason: mapFinishReason(choice.finish_reason, toolCalls.length > 0),
+    usage:        decodeUsage(reply.usage),
+    raw:          reply,
+  };
+}
+
+function decodeToolCall(tc: WireToolCall): ToolCallRequest {
+  return {
+    id:        tc.id,
+    name:      tc.function?.name ?? '',
+    arguments: parseToolArgs(tc.function?.arguments ?? ''),
+  };
+}
+
+function decodeUsage(u: WireResponse['usage']): ProviderCallOutput['usage'] {
+  const out: ProviderCallOutput['usage'] = {
+    inputTokens:  u?.prompt_tokens     ?? 0,
+    outputTokens: u?.completion_tokens ?? 0,
+  };
+  if (typeof u?.cache_read_input_tokens === 'number') {
+    out.cacheReadTokens = u.cache_read_input_tokens;
+  }
+  if (typeof u?.cache_creation_input_tokens === 'number') {
+    out.cacheWriteTokens = u.cache_creation_input_tokens;
+  }
+  return out;
+}
+
+function mapFinishReason(
+  raw: string | null | undefined,
+  hasToolCalls: boolean,
+): ProviderCallOutput['finishReason'] {
+  if (raw === 'tool_calls' || raw === 'function_call') return 'tool_use';
+  if (raw === 'length')                                return 'length';
+  if (hasToolCalls && (raw === null || raw === undefined || raw === 'stop')) {
+    return 'tool_use';
+  }
+  return 'stop';
+}
+
+/** JSON.parse with a `{}` fallback on any failure. Used by inline
+ *  recovery paths where malformed input is expected and silent. */
+function parseJsonSafely(s: string): Record<string, unknown> {
+  if (!s) return {};
+  try {
+    const v = JSON.parse(s);
+    return (v && typeof v === 'object' && !Array.isArray(v))
+      ? (v as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Same as parseJsonSafely but emits a warn line — `tool_calls.arguments`
+ * being unparseable is a model bug worth surfacing in logs (the agent
+ * loop still continues with `{}`, so it's a warning rather than an
+ * error).
+ */
+function parseToolArgs(s: string): Record<string, unknown> {
+  if (!s) return {};
+  try {
+    const v = JSON.parse(s);
+    return (v && typeof v === 'object' && !Array.isArray(v))
+      ? (v as Record<string, unknown>)
+      : {};
+  } catch {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[chatCompletionsAdapter] tool_calls.arguments is not valid JSON; ' +
+      'falling back to {}',
+    );
+    return {};
+  }
+}
+
+// ── SSE stream parsing ──────────────────────────────────────────────────
+
+/**
+ * Read an SSE-encoded ReadableStream and yield the `data:` payload
+ * strings, in order. `data: [DONE]` and blank lines are passed through
+ * verbatim — callers filter as needed. Comment lines (starting with `:`)
+ * are skipped. Cross-chunk byte boundaries inside a `data:` line are
+ * preserved by holding the trailing partial line until the next chunk.
  *
- * Exposed at module scope (not the class) so the unit test can drive it
- * with hand-built JSON without spinning up an adapter + fetch mock.
+ * Re-used by the Anthropic adapter for its event stream too.
+ */
+export async function* parseSseStream(
+  body: ReadableStream<Uint8Array>,
+): AsyncGenerator<string, void, void> {
+  const reader  = body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer    = '';
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (value) buffer += decoder.decode(value, { stream: true });
+      if (done) {
+        buffer += decoder.decode();   // flush any pending bytes
+        if (buffer.length > 0) {
+          for (const payload of extractDataLines(buffer + '\n')) yield payload;
+        }
+        return;
+      }
+
+      // Process complete lines; keep the trailing partial in `buffer`.
+      const lastNewline = buffer.lastIndexOf('\n');
+      if (lastNewline === -1) continue;
+      const ready  = buffer.slice(0, lastNewline + 1);
+      buffer       = buffer.slice(lastNewline + 1);
+      for (const payload of extractDataLines(ready)) yield payload;
+    }
+  } finally {
+    try { reader.releaseLock(); } catch { /* may already be released */ }
+  }
+}
+
+function* extractDataLines(block: string): Generator<string, void, void> {
+  for (const rawLine of block.split('\n')) {
+    const line = rawLine.replace(/\r$/, '');
+    if (line.length === 0)            continue;   // event boundary
+    if (line.startsWith(':'))         continue;   // SSE comment
+    if (line.startsWith('data:')) {
+      yield line.slice(5).replace(/^ /, '');
+    }
+  }
+}
+
+// ── Streaming decoder ───────────────────────────────────────────────────
+//
+// OpenAI's chat completions stream emits chunks shaped like:
+//
+//   { choices: [ { delta: { content?: string, tool_calls?: [...] },
+//                  finish_reason?: string } ] }
+//
+// Tool calls stream in incrementally — the first chunk for a tool carries
+// `id` + `name`; subsequent chunks carry partial `arguments`. We:
+//   - emit a `tool_call` event the moment a tool index first shows up
+//     with id+name (consumer needs this fast for UI mode-switching),
+//   - accumulate argument fragments per index,
+//   - SUPPRESS text deltas after the first tool_call event — once the
+//     model is in tool mode any text fragments are scratch and replaying
+//     them confuses display layers,
+//   - on `finish_reason`, parse buffered tool args, build the final
+//     ProviderCallOutput, yield `done`, and stop.
+//
+// Mid-stream provider error frames (`{"error":...}`) are surfaced as
+// retryable ProviderErrors so the FallbackAdapter advances slots.
+
+interface StreamingTool {
+  id:    string;
+  name:  string;
+  args:  string;       // accumulated JSON string
+}
+
+async function* decodeStream(
+  body:         ReadableStream<Uint8Array>,
+  providerName: string,
+): AsyncGenerator<StreamEvent, void, void> {
+  const tools:     Map<number, StreamingTool> = new Map();
+  let textBuffer:  string                = '';
+  let finishReason: string | null        = null;
+  let usage:       WireResponse['usage'] = undefined;
+  let toolMode     = false;
+
+  for await (const payload of parseSseStream(body)) {
+    if (!payload || payload === '[DONE]') continue;
+    let chunk: any;
+    try { chunk = JSON.parse(payload); }
+    catch { continue; }
+
+    // Mid-stream provider error frames. Some providers (OpenRouter,
+    // Groq with `tool_use_failed`, Together when a backend transient
+    // hits) embed the error inside the SSE stream rather than closing
+    // the connection or returning a 4xx/5xx. Surface these so the
+    // FallbackAdapter can advance slots — silently `continue`-ing
+    // would make the loop wait until the server eventually closes,
+    // which can be tens of seconds.
+    if (chunk?.error) {
+      const recovered = tryRecoverLegacyToolCall(
+        JSON.stringify({ error: chunk.error }),
+      );
+      if (recovered) {
+        for (const tc of recovered.toolCalls) {
+          yield { type: 'tool_call', toolCall: tc };
+        }
+        yield {
+          type: 'done',
+          output: {
+            content:      '',
+            toolCalls:    recovered.toolCalls,
+            finishReason: recovered.finishReason,
+            usage:        decodeUsage(usage),
+          },
+        };
+        return;
+      }
+      const message: string =
+        (chunk.error && typeof chunk.error.message === 'string')
+          ? chunk.error.message
+          : 'unknown';
+      throw new ProviderError(
+        `Provider ${providerName} stream error: ${message}`,
+        providerName,
+        undefined,
+        chunk.error,
+        true,
+      );
+    }
+
+    if (chunk?.usage) usage = chunk.usage;
+    const choice = chunk?.choices?.[0];
+    if (!choice) continue;
+
+    const delta = choice.delta ?? {};
+
+    if (typeof delta.content === 'string' && delta.content.length > 0) {
+      if (!toolMode) {
+        textBuffer += delta.content;
+        yield { type: 'delta', content: delta.content };
+      }
+      // else: suppress — model is in tool mode, this is scratch text.
+    }
+
+    if (Array.isArray(delta.tool_calls)) {
+      for (const tcDelta of delta.tool_calls as WireToolCall[]) {
+        const idx = typeof tcDelta.index === 'number' ? tcDelta.index : 0;
+        let tool = tools.get(idx);
+        const incomingId   = tcDelta.id;
+        const incomingName = tcDelta.function?.name;
+        if (!tool) {
+          if (incomingId && incomingName) {
+            tool = { id: incomingId, name: incomingName, args: '' };
+            tools.set(idx, tool);
+            toolMode = true;
+            yield {
+              type:     'tool_call',
+              toolCall: { id: incomingId, name: incomingName, arguments: {} },
+            };
+          } else {
+            // First we hear of this index but no id/name yet — wait.
+            continue;
+          }
+        }
+        // Some providers send the id later in the stream; fill in if so.
+        if (!tool.id   && incomingId)   tool.id   = incomingId;
+        if (!tool.name && incomingName) tool.name = incomingName;
+
+        const argFragment = tcDelta.function?.arguments;
+        if (typeof argFragment === 'string' && argFragment.length > 0) {
+          tool.args += argFragment;
+        }
+      }
+    }
+
+    if (choice.finish_reason) finishReason = choice.finish_reason;
+  }
+
+  const finalisedToolCalls: ToolCallRequest[] = Array.from(tools.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([, t]) => ({
+      id:        t.id,
+      name:      t.name,
+      arguments: parseJsonSafely(t.args),
+    }));
+
+  // If the model emitted only inline-syntax tool calls in the text body,
+  // recover them now so the streaming and non-streaming paths agree.
+  let content: string | null = textBuffer;
+  let toolCalls = finalisedToolCalls;
+  if (content && toolCalls.length === 0) {
+    const inline = extractInlineToolCalls(content);
+    if (inline) {
+      content   = inline.content;
+      toolCalls = inline.toolCalls;
+    }
+  }
+
+  yield {
+    type: 'done',
+    output: {
+      content,
+      toolCalls,
+      finishReason: mapFinishReason(finishReason, toolCalls.length > 0),
+      usage:        decodeUsage(usage),
+    },
+  };
+}
+
+// ── Legacy `<function=…>` syntax recovery ───────────────────────────────
+//
+// Three forms are recognised in real-world model output:
+//
+//   PAREN     <function=foo({"a":1})>
+//   XML-OBJ   <function=foo {"a":1}</function>
+//   XML-ARR   <function=foo [{"a":1}]</function>           (singleton arrays only)
+//
+// Used for two purposes:
+//   a) Inline recovery on a successful response whose `tool_calls[]` is
+//      empty but whose `content` text contains a function call.
+//   b) Recovery on Groq's `tool_use_failed` 400 where the body's
+//      `error.failed_generation` contains the rejected call.
+
+interface LegacyCall { name: string; args: Record<string, unknown> }
+
+/** Shape returned by both legacy-syntax recovery helpers. */
+export interface LegacyRecoveryResult {
+  toolCalls:    ToolCallRequest[];
+  finishReason: 'tool_use';
+}
+
+/**
+ * Parse a body of text for `<function=…>` calls. Returns
+ * `{toolCalls, finishReason: 'tool_use'}` when at least one call was
+ * recovered; `null` otherwise (so callers can short-circuit cheaply).
+ */
+export function parseLegacyFunctionSyntax(
+  text: string,
+): LegacyRecoveryResult | null {
+  if (!text || !text.includes('<function=')) return null;
+  const calls: LegacyCall[] = [];
+
+  let cursor = 0;
+  while (cursor < text.length) {
+    const start = text.indexOf('<function=', cursor);
+    if (start === -1) break;
+    const nameStart = start + '<function='.length;
+
+    // Name runs until the first separator (paren, whitespace).
+    let nameEnd = nameStart;
+    while (nameEnd < text.length && !/[(\s]/.test(text[nameEnd])) nameEnd++;
+    const name = text.slice(nameStart, nameEnd).trim();
+
+    // Walk forward past whitespace to the args region.
+    let argsStart = nameEnd;
+    while (argsStart < text.length && /\s/.test(text[argsStart])) argsStart++;
+
+    let args: Record<string, unknown> = {};
+    let consumeUpTo = argsStart;
+
+    if (text[argsStart] === '(') {
+      // PAREN form: args is a balanced-paren region containing JSON object.
+      const closeParen = matchBalanced(text, argsStart, '(', ')');
+      if (closeParen === -1) break;
+      const inner = text.slice(argsStart + 1, closeParen).trim();
+      args = decodeArgs(inner);
+      consumeUpTo = closeParen + 1;
+      if (text[consumeUpTo] === '>') consumeUpTo += 1;
+    } else if (text[argsStart] === '{') {
+      // XML-OBJ form: balanced braces, then `</function>` closer.
+      const closeBrace = matchBalanced(text, argsStart, '{', '}');
+      if (closeBrace === -1) break;
+      args = decodeArgs(text.slice(argsStart, closeBrace + 1));
+      consumeUpTo = closeBrace + 1;
+      const endTag = text.indexOf('</function>', consumeUpTo);
+      if (endTag !== -1) consumeUpTo = endTag + '</function>'.length;
+    } else if (text[argsStart] === '[') {
+      // XML-ARR form: balanced brackets, accept singleton arrays only.
+      const closeBracket = matchBalanced(text, argsStart, '[', ']');
+      if (closeBracket === -1) break;
+      const arrayText = text.slice(argsStart, closeBracket + 1);
+      try {
+        const parsed = JSON.parse(arrayText);
+        if (Array.isArray(parsed) && parsed.length === 1
+            && parsed[0] && typeof parsed[0] === 'object'
+            && !Array.isArray(parsed[0])) {
+          args = parsed[0] as Record<string, unknown>;
+        }
+      } catch { /* fall back to {} */ }
+      consumeUpTo = closeBracket + 1;
+      const endTag = text.indexOf('</function>', consumeUpTo);
+      if (endTag !== -1) consumeUpTo = endTag + '</function>'.length;
+    } else {
+      cursor = nameEnd;
+      continue;
+    }
+
+    if (name) calls.push({ name, args });
+    cursor = consumeUpTo;
+  }
+
+  if (calls.length === 0) return null;
+  return {
+    toolCalls: calls.map((c, idx) => ({
+      id:        `call_inline_${idx}`,
+      name:      c.name,
+      arguments: c.args,
+    })),
+    finishReason: 'tool_use',
+  };
+}
+
+/**
+ * Walk a balanced `(open, close)` region starting at `text[fromIdx]`.
+ * Returns the index of the matching close char, or -1 if unmatched.
+ * String literals (`"..."`) are skipped so braces inside JSON keys/
+ * values don't disturb the count.
+ */
+function matchBalanced(text: string, fromIdx: number, open: string, close: string): number {
+  if (text[fromIdx] !== open) return -1;
+  let depth   = 0;
+  let inStr   = false;
+  let escaped = false;
+  for (let i = fromIdx; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (escaped)        { escaped = false; continue; }
+      if (ch === '\\')    { escaped = true;  continue; }
+      if (ch === '"')     { inStr   = false; continue; }
+      continue;
+    }
+    if (ch === '"')   { inStr = true; continue; }
+    if (ch === open)  { depth++; }
+    else if (ch === close) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function decodeArgs(raw: string): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Scan `text` for inline tool-call markers in either of the two
+ * recovery formats Aiden recognises:
+ *
+ *   1. `<function=name(...)>`  / `<function=name {...}</function>`
+ *      — Groq / Llama legacy syntax. Handled by `parseLegacyFunctionSyntax`.
+ *   2. `<tool_call>{"name":…, "arguments":…}</tool_call>`
+ *      — public XML tool-call format used by Qwen and several other
+ *      open-source instruction-tuned models; closing tag may be missing
+ *      (truncated generation) which we still recover from.
+ *
+ * Returns `null` when no recoverable marker is present at all so callers
+ * can short-circuit cheaply. On recovery returns `{toolCalls, content}`
+ * with the markers stripped from `content` (or `content: null` when the
+ * stripped text is empty). All ids are synthesised as `tc-inline-<n>`.
+ */
+export function extractInlineToolCalls(
+  text: string | null | undefined,
+): { content: string | null; toolCalls: ToolCallRequest[] } | null {
+  if (!text) return null;
+
+  const fromFunctionSyntax = parseLegacyFunctionSyntax(text);
+  const fromTagSyntax      = parseToolCallTags(text);
+  if (!fromFunctionSyntax && !fromTagSyntax) return null;
+
+  const toolCalls: ToolCallRequest[] = [];
+  let n = 0;
+  if (fromFunctionSyntax) {
+    for (const tc of fromFunctionSyntax.toolCalls) {
+      toolCalls.push({ ...tc, id: `tc-inline-${n++}` });
+    }
+  }
+  if (fromTagSyntax) {
+    for (const c of fromTagSyntax) {
+      toolCalls.push({ id: `tc-inline-${n++}`, name: c.name, arguments: c.args });
+    }
+  }
+
+  // Strip the matched markers from the text. Coarse but thorough:
+  //   - closed `<function=…(…)>` / `<function=… {…}</function>` / `<function=… […]</function>`
+  //   - closed `<tool_call>…</tool_call>`
+  //   - unclosed `<tool_call>…` running to end of input (truncated gen)
+  const stripped = text
+    .replace(
+      /<function=[^(<\s]+\s*(?:\([^]*?\)>|\{[^]*?\}<\/function>|\[[^]*?\]<\/function>)/g,
+      '',
+    )
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
+    .replace(/<tool_call>[\s\S]*$/g, '')
+    .trim();
+
+  return {
+    content:   stripped.length > 0 ? stripped : null,
+    toolCalls,
+  };
+}
+
+/**
+ * Parse `<tool_call>{...}</tool_call>` (and the unclosed `<tool_call>{...}`
+ * variant) into a list of `{name, args}` records, or `null` when no
+ * marker matched cleanly. Tags whose JSON body is malformed, missing the
+ * required `name` key, or has a non-object `arguments` value are skipped
+ * silently — partial recovery is better than nothing, but we never
+ * fabricate a tool name.
+ */
+function parseToolCallTags(text: string): LegacyCall[] | null {
+  if (!text || !text.includes('<tool_call>')) return null;
+  const TAG = '<tool_call>';
+  const calls: LegacyCall[] = [];
+
+  let cursor = 0;
+  while (cursor < text.length) {
+    const tagStart = text.indexOf(TAG, cursor);
+    if (tagStart === -1) break;
+    const afterTag = tagStart + TAG.length;
+
+    const jsonStart = text.indexOf('{', afterTag);
+    if (jsonStart === -1) break;
+
+    const jsonEnd = matchBalanced(text, jsonStart, '{', '}');
+    if (jsonEnd === -1) {
+      cursor = afterTag;
+      continue;
+    }
+
+    const slice = text.slice(jsonStart, jsonEnd + 1);
+    let parsed: any;
+    try { parsed = JSON.parse(slice); }
+    catch { cursor = jsonEnd + 1; continue; }
+
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.name !== 'string'
+        || parsed.name.length === 0) {
+      cursor = jsonEnd + 1;
+      continue;
+    }
+
+    const args =
+      parsed.arguments && typeof parsed.arguments === 'object' && !Array.isArray(parsed.arguments)
+        ? (parsed.arguments as Record<string, unknown>)
+        : {};
+    calls.push({ name: parsed.name, args });
+
+    let after = jsonEnd + 1;
+    const closeIdx = text.indexOf('</tool_call>', after);
+    if (closeIdx !== -1 && closeIdx - after <= 8) {
+      after = closeIdx + '</tool_call>'.length;
+    }
+    cursor = after;
+  }
+
+  return calls.length > 0 ? calls : null;
+}
+
+/**
+ * Recover the tool call(s) from a Groq `tool_use_failed` 400 body.
+ * Returns `null` when the body isn't tool_use_failed, isn't JSON, or
+ * carries no recoverable inline syntax.
  */
 export function tryRecoverLegacyToolCall(
   rawBody: string,
-): ProviderCallOutput | null {
+): LegacyRecoveryResult | null {
   if (!rawBody) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(rawBody);
-  } catch {
+  let body: any;
+  try { body = JSON.parse(rawBody); } catch { return null; }
+  const code = body?.error?.code ?? body?.error?.type;
+  if (code !== 'tool_use_failed' && code !== 'tool_use_failed_to_validate') {
     return null;
   }
-  // Groq error shape:
-  //   { error: { code: 'tool_use_failed', failed_generation: '<function=...>', ... } }
-  const err = (parsed as { error?: { code?: string; failed_generation?: string } })?.error;
-  if (!err || err.code !== 'tool_use_failed') return null;
-  const generation = err.failed_generation;
+  const generation: string | undefined = body?.error?.failed_generation;
   if (typeof generation !== 'string' || !generation.includes('<function=')) {
     return null;
   }
@@ -166,834 +1022,59 @@ export function tryRecoverLegacyToolCall(
 }
 
 /**
- * Parse a single `<function=name({args})>` invocation into a synthetic
- * `ProviderCallOutput` with one `ToolCallRequest`. Multiple legacy calls
- * concatenated in one generation are best-effort — we recover what we can.
- *
- * Exported for unit tests.
+ * Build a synthetic `Response` whose body is a chat completions reply
+ * carrying the recovered tool call(s). Used when `dispatch()` rescues a
+ * Groq `tool_use_failed` 400 — the caller's `response.text() + JSON.parse`
+ * path still works without conditional branching.
  */
-export function parseLegacyFunctionSyntax(
-  text: string,
-): ProviderCallOutput | null {
-  // Llama-3.3 emits three distinct legacy formats when it confuses itself:
-  //   (A) `<function=NAME(JSON)>`              — paren-delimited args
-  //   (B) `<function=NAME JSON</function>`     — XML-tag, brace-delimited
-  //   (C) `<function=NAME [{JSON}]</function>` — XML-tag, single-element
-  //                                              array wrapping the obj
-  // (A) walks balanced parens; (B)/(C) walk balanced braces or brackets.
-  // Phase 16e: variant (C) appeared in 16d smoke run 2 (session_search call)
-  // — same `tool_use_failed` 400 path as (B) but the model wrapped the
-  // single argument object in a JSON array. Unwrap to the first element.
-  const reHead = /<function=([A-Za-z0-9_.\-]+)\s*([({[])/g;
-  const calls: ToolCallRequest[] = [];
-  let match: RegExpExecArray | null;
-  let counter = 0;
-  while ((match = reHead.exec(text)) !== null) {
-    const name = match[1];
-    const opener = match[2];
-    const closer =
-      opener === '(' ? ')' : opener === '{' ? '}' : ']';
-    // For (B)/(C) the regex's `{` or `[` is the opening of the JSON
-    // structure — we want to keep it inside argsBody so JSON.parse sees
-    // the full value. For (A) the `(` is delimiter only and is consumed.
-    let i = opener === '('
-      ? match.index + match[0].length
-      : match.index + match[0].length - 1;
-    let depth = 1;
-    const start = i;
-    let inString = false;
-    let escape = false;
-    if (opener === '{' || opener === '[') {
-      // Consume the opener; bump depth back to 1 for the walker below.
-      i += 1;
-    }
-    while (i < text.length && depth > 0) {
-      const ch = text[i];
-      if (escape) {
-        escape = false;
-      } else if (ch === '\\') {
-        escape = true;
-      } else if (inString) {
-        if (ch === '"') inString = false;
-      } else if (ch === '"') {
-        inString = true;
-      } else if (ch === opener) {
-        depth += 1;
-      } else if (ch === closer) {
-        depth -= 1;
-      }
-      i += 1;
-    }
-    if (depth !== 0) continue;
-    // (A) drop the trailing `)`. (B)/(C) keep the trailing closer since
-    // it's part of the JSON value being parsed.
-    const argsBody = opener === '('
-      ? text.slice(start, i - 1)
-      : text.slice(start, i);
-    let args: Record<string, unknown> = {};
-    if (argsBody.trim().length > 0) {
-      try {
-        const parsed = JSON.parse(argsBody);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          args = parsed as Record<string, unknown>;
-        } else if (
-          // Variant (C): unwrap single-element array of object.
-          Array.isArray(parsed) &&
-          parsed.length === 1 &&
-          parsed[0] &&
-          typeof parsed[0] === 'object' &&
-          !Array.isArray(parsed[0])
-        ) {
-          args = parsed[0] as Record<string, unknown>;
-        }
-      } catch {
-        // Leave args as {} — the tool dispatcher will error gracefully and
-        // the model gets to retry with proper formatting.
-      }
-    }
-    counter += 1;
-    calls.push({
-      id: `legacy-fn-${counter}-${Date.now().toString(36)}`,
-      name,
-      arguments: args,
-    });
-  }
-  if (calls.length === 0) return null;
-  return {
-    content: null,
-    toolCalls: calls,
-    finishReason: 'tool_use',
-    usage: { inputTokens: 0, outputTokens: 0 },
+function synthesiseRecoveredResponse(recovered: LegacyRecoveryResult): Response {
+  const wireBody: WireResponse = {
+    choices: [
+      {
+        message: {
+          role:    'assistant',
+          content: null,
+          tool_calls: recovered.toolCalls.map((tc) => ({
+            id:        tc.id,
+            type:      'function',
+            function:  {
+              name:      tc.name,
+              arguments: JSON.stringify(tc.arguments ?? {}),
+            },
+          })),
+        },
+        finish_reason: 'tool_calls',
+      },
+    ],
   };
+  return new Response(JSON.stringify(wireBody), {
+    status:     200,
+    statusText: 'OK',
+    headers:    { 'Content-Type': 'application/json' },
+  });
 }
 
-/**
- * Phase 21 #4 — Hermes/Qwen `<tool_call>...</tool_call>` extraction.
- *
- * Implements the Hermes/Qwen tool-call format spec (a public format used
- * by Nous Hermes and Qwen open-source models). Together's Qwen3-Instruct
- * intermittently emits
- * `<tool_call>{"name": "...", "arguments": {...}}</tool_call>` inside
- * `message.content` of a 200-OK response — bypassing the OpenAI
- * tool_calls envelope entirely. Without this extraction the raw tag text
- * leaks to the user (Phase 21 #4 user report).
- *
- * Strategy:
- *   1. Skip when `<tool_call>` is not in the text — fast no-op.
- *   2. Match closed `<tool_call>X</tool_call>` AND unclosed `<tool_call>X`
- *      (truncated generation) via the same compiled regex.
- *   3. Each match: JSON-parse the body, require `name` key, build a
- *      synthetic ToolCallRequest. Skip silently on JSON-parse error.
- *   4. Visible content = everything before the first `<tool_call>` tag.
- *
- * Returns null when no tool calls were extracted — caller falls through.
- *
- * Exposed at module scope for unit tests and for the streaming
- * finaliser to share the same logic.
- */
-const INLINE_TOOL_CALL_RE = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>|<tool_call>\s*([\s\S]*)/g;
+// ── Misc helpers ────────────────────────────────────────────────────────
 
-export function extractInlineToolCalls(text: string | null | undefined): {
-  content: string | null;
-  toolCalls: ToolCallRequest[];
-} | null {
-  if (!text || !text.includes('<tool_call>')) return null;
-  INLINE_TOOL_CALL_RE.lastIndex = 0;
-  const calls: ToolCallRequest[] = [];
-  let match: RegExpExecArray | null;
-  let counter = 0;
-  while ((match = INLINE_TOOL_CALL_RE.exec(text)) !== null) {
-    const rawJson = (match[1] ?? match[2] ?? '').trim();
-    if (!rawJson) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(rawJson);
-    } catch {
-      continue;
-    }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
-    const tc = parsed as { name?: unknown; arguments?: unknown };
-    if (typeof tc.name !== 'string' || tc.name.length === 0) continue;
-    const args =
-      tc.arguments && typeof tc.arguments === 'object' && !Array.isArray(tc.arguments)
-        ? (tc.arguments as Record<string, unknown>)
-        : {};
-    counter += 1;
-    calls.push({
-      id: `tc-inline-${counter}-${Date.now().toString(36)}`,
-      name: tc.name,
-      arguments: args,
-    });
-  }
-  if (calls.length === 0) return null;
-  const firstTag = text.indexOf('<tool_call>');
-  const visible = firstTag > 0 ? text.slice(0, firstTag).trim() : '';
-  return { content: visible.length > 0 ? visible : null, toolCalls: calls };
+function backoffMs(attempt: number): number {
+  const base   = BACKOFF_BASE_MS * 2 ** attempt;
+  const jitter = Math.floor(Math.random() * Math.min(BACKOFF_BASE_MS, base / 4));
+  return base + jitter;
 }
 
-/**
- * Phase 16c: parse an SSE byte stream from /v1/chat/completions into
- * `data: <json>` payloads. Yields raw JSON-string payloads only — caller
- * is responsible for `JSON.parse` + chunk shape validation, since
- * providers occasionally interleave error frames or `[DONE]` sentinels.
- *
- * Why hand-rolled vs an SSE library: dependency-free, ~30 lines, and the
- * v4 server already does the same thing for OpenAI-wire output. The SSE
- * spec is trivially simple — newline-delimited `field: value` lines.
- *
- * Exported for unit tests.
- */
-export async function* parseSseStream(
-  body: ReadableStream<Uint8Array>,
-): AsyncGenerator<string, void, void> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder('utf-8');
-  let buffer = '';
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function safeReadBody(r: Response): Promise<unknown> {
   try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let nl: number;
-      // Process line-by-line. Both `\n` and `\r\n` are permitted by the
-      // SSE spec; we normalise by stripping trailing `\r`.
-      while ((nl = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, nl).replace(/\r$/, '');
-        buffer = buffer.slice(nl + 1);
-        if (line.startsWith('data: ')) {
-          const payload = line.slice(6);
-          if (payload === '[DONE]') return;
-          yield payload;
-        } else if (line.startsWith('data:')) {
-          // Some providers omit the space after the colon (per spec, valid).
-          const payload = line.slice(5);
-          if (payload === '[DONE]') return;
-          yield payload;
-        }
-        // Comment lines (`: ping`) and blank line dividers are ignored.
-      }
-    }
-    // Flush any trailing data after the last newline (rare — most servers
-    // terminate with a blank line + `[DONE]`).
-    const tail = buffer.replace(/\r$/, '');
-    if (tail.startsWith('data: ')) {
-      const payload = tail.slice(6);
-      if (payload !== '[DONE]') yield payload;
-    } else if (tail.startsWith('data:')) {
-      const payload = tail.slice(5);
-      if (payload !== '[DONE]') yield payload;
-    }
-  } finally {
-    try {
-      reader.releaseLock();
-    } catch {
-      // releaseLock throws if the reader is already in a pending read state;
-      // safe to swallow during teardown.
-    }
+    const text = await r.text();
+    return tryParseJson(text);
+  } catch {
+    return null;
   }
 }
 
-export class ChatCompletionsAdapter implements ProviderAdapter {
-  apiMode: ApiMode = 'chat_completions';
-  private readonly baseUrl: string;
-  private readonly apiKey: string;
-  private readonly model: string;
-  private readonly providerName: string;
-  private readonly timeoutMs: number;
-  private readonly maxRetries: number;
-  private readonly extraHeaders: Record<string, string>;
-
-  constructor(options: ChatCompletionsAdapterOptions) {
-    this.baseUrl = options.baseUrl.replace(/\/+$/, '');
-    this.apiKey = options.apiKey;
-    this.model = options.model;
-    this.providerName = options.providerName;
-    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-    this.extraHeaders = options.extraHeaders ?? {};
-  }
-
-  async call(input: ProviderCallInput): Promise<ProviderCallOutput> {
-    const body = this.buildRequestBody(input);
-    const url = `${this.baseUrl}/chat/completions`;
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${this.apiKey}`,
-      ...this.extraHeaders,
-    };
-
-    const totalAttempts = this.maxRetries + 1;
-    let lastTransientError: ProviderError | null = null;
-
-    for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
-      try {
-        const response = await this.fetchWithTimeout(url, headers, body);
-
-        if (response.ok) {
-          const json = (await response.json()) as OpenAIResponse;
-          return this.parseResponse(json);
-        }
-
-        const status = response.status;
-        const rawText = await this.safeReadText(response);
-
-        // Non-retryable: 4xx that's NOT 429 (request bugs).
-        if (status >= 400 && status < 500 && status !== 429) {
-          // Phase 16b.2: Llama-3.3 fine-tunes sometimes emit the legacy
-          // `<function=name({args})>` syntax instead of OpenAI tool_calls.
-          // Groq surfaces this as a 400 with `tool_use_failed` and the raw
-          // generation in `failed_generation`. Parse it back into a
-          // synthetic tool_call so the loop survives the first message.
-          const recovered = tryRecoverLegacyToolCall(rawText);
-          if (recovered) {
-            return recovered;
-          }
-          throw new ProviderError(
-            `Provider ${this.providerName} returned ${status}: ${rawText.slice(0, 500)}`,
-            this.providerName,
-            status,
-            rawText,
-            false,
-          );
-        }
-
-        // Retryable: 429 or 5xx.
-        const isRateLimit = status === 429;
-        lastTransientError = isRateLimit
-          ? new ProviderRateLimitError(this.providerName, rawText)
-          : new ProviderError(
-              `Provider ${this.providerName} returned ${status}: ${rawText.slice(0, 500)}`,
-              this.providerName,
-              status,
-              rawText,
-              true,
-            );
-
-        if (attempt < totalAttempts) {
-          await this.sleep(this.backoffMs(attempt));
-          continue;
-        }
-        throw lastTransientError;
-      } catch (err) {
-        if (err instanceof ProviderError && !err.retryable) {
-          throw err;
-        }
-        if (err instanceof ProviderTimeoutError) {
-          // Timeouts are retryable — keep going if budget remains.
-          lastTransientError = err;
-          if (attempt < totalAttempts) {
-            await this.sleep(this.backoffMs(attempt));
-            continue;
-          }
-          throw err;
-        }
-        if (err instanceof ProviderError) {
-          lastTransientError = err;
-          if (attempt < totalAttempts) {
-            await this.sleep(this.backoffMs(attempt));
-            continue;
-          }
-          throw err;
-        }
-        // Unknown error (e.g. network failure) — wrap and treat as retryable.
-        const wrapped = new ProviderError(
-          `Provider ${this.providerName} request failed: ${err instanceof Error ? err.message : String(err)}`,
-          this.providerName,
-          undefined,
-          err,
-          true,
-        );
-        lastTransientError = wrapped;
-        if (attempt < totalAttempts) {
-          await this.sleep(this.backoffMs(attempt));
-          continue;
-        }
-        throw wrapped;
-      }
-    }
-
-    // Loop guarantees a return or throw above; this satisfies TS.
-    throw lastTransientError ?? new ProviderError(
-      `Provider ${this.providerName} exhausted retries`,
-      this.providerName,
-    );
-  }
-
-  /**
-   * Phase 16c: streaming variant of `call`. Yields `delta` events as
-   * tokens arrive, `tool_call` events when each tool's name first
-   * appears in the SSE stream, and exactly one `done` event at the end
-   * with a fully assembled `ProviderCallOutput`.
-   *
-   * Mirrors Hermes `_call_chat_completions` (run_agent.py:6753):
-   *   - text deltas only stream while no tool calls have been seen this turn
-   *   - tool_calls are accumulated by index; partial JSON arguments are
-   *     concatenated until the SSE stream ends, then validated with
-   *     JSON.parse
-   *   - the final assistant message mirrors what `call()` would have
-   *     returned, so the agent loop can reuse its existing tool-call
-   *     dispatch logic verbatim
-   *
-   * Failures: on any 4xx/5xx response we throw before yielding anything
-   * (same shape as `call`); on a mid-stream network drop we surface a
-   * `ProviderError(retryable:true)` so `runFallbackChainStream` can
-   * advance to the next slot. Per Phase 16c spec we DO NOT silent-retry
-   * with a duplicated preamble — that's deferred to v4.1.
-   */
-  async *callStream(
-    input: ProviderCallInput,
-  ): AsyncGenerator<StreamEvent, void, void> {
-    const body = {
-      ...this.buildRequestBody(input),
-      stream: true,
-      stream_options: { include_usage: true },
-    };
-    const url = `${this.baseUrl}/chat/completions`;
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${this.apiKey}`,
-      Accept: 'text/event-stream',
-      ...this.extraHeaders,
-    };
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (err) {
-      clearTimeout(timer);
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw new ProviderTimeoutError(this.providerName, this.timeoutMs);
-      }
-      throw new ProviderError(
-        `Provider ${this.providerName} stream request failed: ${err instanceof Error ? err.message : String(err)}`,
-        this.providerName,
-        undefined,
-        err,
-        true,
-      );
-    }
-
-    if (!response.ok) {
-      clearTimeout(timer);
-      const status = response.status;
-      const rawText = await this.safeReadText(response);
-      if (status === 429) {
-        throw new ProviderRateLimitError(this.providerName, rawText);
-      }
-      const retryable = status >= 500;
-      throw new ProviderError(
-        `Provider ${this.providerName} returned ${status}: ${rawText.slice(0, 500)}`,
-        this.providerName,
-        status,
-        rawText,
-        retryable,
-      );
-    }
-
-    const responseBody = response.body;
-    if (!responseBody) {
-      clearTimeout(timer);
-      throw new ProviderError(
-        `Provider ${this.providerName} returned an empty stream body`,
-        this.providerName,
-      );
-    }
-
-    // Accumulators for the streaming pass (mirrors `_call_chat_completions`).
-    const contentParts: string[] = [];
-    const toolCallsAcc = new Map<
-      number,
-      { id: string; name: string; argumentsBuf: string }
-    >();
-    const toolGenNotified = new Set<number>();
-    let finishReason: string | null = null;
-    let usage: { prompt_tokens?: number; completion_tokens?: number } | null = null;
-    let toolCallSeen = false;
-
-    try {
-      for await (const payload of parseSseStream(responseBody)) {
-        let chunk: SseChunk;
-        try {
-          chunk = JSON.parse(payload) as SseChunk;
-        } catch {
-          // Some providers emit empty keep-alive lines; skip silently.
-          continue;
-        }
-
-        // Provider-error frames (OpenRouter SSE: {"error":{"message":"..."}}
-        // and Groq's tool_use_failed which arrives mid-stream when the
-        // model emits `<function=name(...)>` legacy syntax instead of
-        // tool_calls.) Match the non-streaming legacy-recovery path so
-        // a streaming turn doesn't fail where a non-streaming turn would
-        // recover.
-        if (chunk.error) {
-          const recovered = tryRecoverLegacyToolCall(JSON.stringify({ error: chunk.error }));
-          if (recovered) {
-            for (const tc of recovered.toolCalls) {
-              yield { type: 'tool_call', toolCall: tc };
-            }
-            yield { type: 'done', output: recovered };
-            clearTimeout(timer);
-            return;
-          }
-          throw new ProviderError(
-            `Provider ${this.providerName} stream error: ${chunk.error.message ?? 'unknown'}`,
-            this.providerName,
-            undefined,
-            chunk.error,
-            true,
-          );
-        }
-
-        if (chunk.usage) usage = chunk.usage;
-
-        const choice = chunk.choices?.[0];
-        if (!choice) continue;
-
-        const delta = choice.delta ?? {};
-        if (typeof delta.content === 'string' && delta.content.length > 0) {
-          contentParts.push(delta.content);
-          // Only stream deltas while no tool call has appeared in this
-          // turn. Once a tool_call event fires the visible stream goes
-          // silent; the display layer is expected to switch into
-          // "executing tool" mode.
-          if (!toolCallSeen) {
-            yield { type: 'delta', content: delta.content };
-          }
-        }
-
-        if (Array.isArray(delta.tool_calls)) {
-          for (const tcDelta of delta.tool_calls) {
-            const idx = typeof tcDelta.index === 'number' ? tcDelta.index : 0;
-            let entry = toolCallsAcc.get(idx);
-            if (!entry) {
-              entry = { id: tcDelta.id ?? '', name: '', argumentsBuf: '' };
-              toolCallsAcc.set(idx, entry);
-            }
-            if (tcDelta.id) entry.id = tcDelta.id;
-            const fn = tcDelta.function;
-            if (fn) {
-              if (typeof fn.name === 'string' && fn.name.length > 0) {
-                // Assignment, not concat — once a name is set it does not
-                // change across deltas for the same tool-call index.
-                entry.name = fn.name;
-              }
-              if (typeof fn.arguments === 'string') {
-                entry.argumentsBuf += fn.arguments;
-              }
-            }
-            if (entry.name && !toolGenNotified.has(idx)) {
-              toolGenNotified.add(idx);
-              toolCallSeen = true;
-              // Yield a tool_call event with empty arguments — display
-              // can show "preparing <name>…". The real arguments arrive
-              // in the final `done` event.
-              yield {
-                type: 'tool_call',
-                toolCall: {
-                  id: entry.id || `pending-${idx}`,
-                  name: entry.name,
-                  arguments: {},
-                },
-              };
-            }
-          }
-        }
-
-        if (choice.finish_reason) {
-          finishReason = choice.finish_reason;
-        }
-      }
-    } catch (err) {
-      clearTimeout(timer);
-      if (err instanceof ProviderError) throw err;
-      throw new ProviderError(
-        `Provider ${this.providerName} stream interrupted: ${err instanceof Error ? err.message : String(err)}`,
-        this.providerName,
-        undefined,
-        err,
-        true,
-      );
-    } finally {
-      clearTimeout(timer);
-    }
-
-    // Assemble final tool calls. Mirrors `parseResponse` minus the
-    // legacy-recovery path (streaming responses don't surface that
-    // wire-format quirk — Groq returns it as a 400 before any chunk).
-    const toolCalls: ToolCallRequest[] = [];
-    for (const idx of [...toolCallsAcc.keys()].sort((a, b) => a - b)) {
-      const entry = toolCallsAcc.get(idx)!;
-      let args: Record<string, unknown> = {};
-      const buf = entry.argumentsBuf.trim();
-      if (buf.length > 0) {
-        try {
-          const parsed = JSON.parse(buf);
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            args = parsed as Record<string, unknown>;
-          }
-        } catch {
-          console.warn(
-            `[${this.providerName}] failed to JSON.parse streamed tool args for ${entry.name}; falling back to {}`,
-          );
-        }
-      }
-      toolCalls.push({
-        id: entry.id || `call_${idx}_${Date.now().toString(36)}`,
-        name: entry.name || '?',
-        arguments: args,
-      });
-    }
-
-    let mappedFinish: ProviderCallOutput['finishReason'];
-    switch (finishReason) {
-      case 'stop':
-        mappedFinish = 'stop';
-        break;
-      case 'tool_calls':
-      case 'function_call':
-        mappedFinish = 'tool_use';
-        break;
-      case 'length':
-        mappedFinish = 'length';
-        break;
-      default:
-        mappedFinish = toolCalls.length > 0 ? 'tool_use' : 'stop';
-        break;
-    }
-
-    let fullContent = contentParts.length > 0 ? contentParts.join('') : null;
-    let finalToolCalls = toolCalls;
-    let finalFinish = mappedFinish;
-    // Phase 21 #4: same Hermes/Qwen `<tool_call>` extraction the
-    // non-streaming path applies. Stream of bare `<tool_call>` tags
-    // ended in contentParts; the OpenAI envelope was empty.
-    if (toolCalls.length === 0 && typeof fullContent === 'string') {
-      const extracted = extractInlineToolCalls(fullContent);
-      if (extracted) {
-        fullContent = extracted.content;
-        finalToolCalls = extracted.toolCalls;
-        finalFinish = 'tool_use';
-      }
-    }
-    const output: ProviderCallOutput = {
-      content: fullContent,
-      toolCalls: finalToolCalls,
-      finishReason: finalFinish,
-      usage: {
-        inputTokens: usage?.prompt_tokens ?? 0,
-        outputTokens: usage?.completion_tokens ?? 0,
-      },
-    };
-    yield { type: 'done', output };
-  }
-
-  private buildRequestBody(input: ProviderCallInput): Record<string, unknown> {
-    const messages = this.translateMessages(input.messages);
-    const body: Record<string, unknown> = {
-      model: this.model,
-      messages,
-    };
-    if (input.tools.length > 0) {
-      body.tools = this.translateTools(input.tools);
-      body.tool_choice = 'auto';
-    }
-    if (input.maxTokens != null) body.max_tokens = input.maxTokens;
-    if (input.temperature != null) body.temperature = input.temperature;
-    if (input.extraBody) Object.assign(body, input.extraBody);
-    return body;
-  }
-
-  private translateMessages(messages: Message[]): OpenAIMessage[] {
-    // Concat consecutive system messages at the head — some OAI-compat
-    // providers reject >1 system message.
-    const out: OpenAIMessage[] = [];
-    let i = 0;
-    if (messages.length > 0 && messages[0].role === 'system') {
-      const headSystems: string[] = [];
-      while (i < messages.length && messages[i].role === 'system') {
-        headSystems.push((messages[i] as { content: string }).content);
-        i += 1;
-      }
-      out.push({ role: 'system', content: headSystems.join('\n\n') });
-    }
-    for (; i < messages.length; i += 1) {
-      const msg = messages[i];
-      switch (msg.role) {
-        case 'system':
-          out.push({ role: 'system', content: msg.content });
-          break;
-        case 'user':
-          out.push({ role: 'user', content: msg.content });
-          break;
-        case 'assistant': {
-          const oai: OpenAIMessage = {
-            role: 'assistant',
-            content: msg.content || null,
-          };
-          if (msg.toolCalls && msg.toolCalls.length > 0) {
-            oai.tool_calls = msg.toolCalls.map((tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.name,
-                arguments: JSON.stringify(tc.arguments ?? {}),
-              },
-            }));
-          }
-          out.push(oai);
-          break;
-        }
-        case 'tool':
-          out.push({
-            role: 'tool',
-            tool_call_id: msg.toolCallId,
-            content: msg.content,
-          });
-          break;
-      }
-    }
-    return out;
-  }
-
-  private translateTools(tools: ToolSchema[]): OpenAITool[] {
-    return tools.map((t) => ({
-      type: 'function' as const,
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.inputSchema,
-      },
-    }));
-  }
-
-  private parseResponse(json: OpenAIResponse): ProviderCallOutput {
-    const choice = json.choices?.[0];
-    if (!choice) {
-      throw new ProviderError(
-        `Provider ${this.providerName} returned no choices`,
-        this.providerName,
-        undefined,
-        json,
-      );
-    }
-
-    const message = choice.message ?? { role: 'assistant', content: null };
-    const toolCalls: ToolCallRequest[] = (message.tool_calls ?? []).map((tc) => {
-      let args: Record<string, unknown> = {};
-      try {
-        args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
-        if (typeof args !== 'object' || args === null) args = {};
-      } catch {
-        console.warn(
-          `[${this.providerName}] failed to JSON.parse tool call arguments for ${tc.function.name} (id=${tc.id}); falling back to {}`,
-        );
-        args = {};
-      }
-      return {
-        id: tc.id,
-        name: tc.function.name,
-        arguments: args,
-      };
-    });
-
-    const rawFinish = choice.finish_reason ?? 'stop';
-    let finishReason: ProviderCallOutput['finishReason'];
-    switch (rawFinish) {
-      case 'stop':
-        finishReason = 'stop';
-        break;
-      case 'tool_calls':
-      case 'function_call':
-        finishReason = 'tool_use';
-        break;
-      case 'length':
-        finishReason = 'length';
-        break;
-      default:
-        finishReason = toolCalls.length > 0 ? 'tool_use' : 'stop';
-        break;
-    }
-
-    // Phase 21 #4: when the OpenAI tool_calls envelope is empty AND the
-    // content carries Hermes/Qwen `<tool_call>...</tool_call>` tags,
-    // extract them client-side. Otherwise the raw tags leak to the user.
-    let visibleContent: string | null = message.content ?? null;
-    let effectiveToolCalls = toolCalls;
-    let effectiveFinish = finishReason;
-    if (toolCalls.length === 0 && typeof visibleContent === 'string') {
-      const extracted = extractInlineToolCalls(visibleContent);
-      if (extracted) {
-        visibleContent = extracted.content;
-        effectiveToolCalls = extracted.toolCalls;
-        effectiveFinish = 'tool_use';
-      }
-    }
-
-    const usage = json.usage ?? {};
-    return {
-      content: visibleContent,
-      toolCalls: effectiveToolCalls,
-      finishReason: effectiveFinish,
-      usage: {
-        inputTokens: usage.prompt_tokens ?? 0,
-        outputTokens: usage.completion_tokens ?? 0,
-        ...(usage.cache_read_input_tokens != null
-          ? { cacheReadTokens: usage.cache_read_input_tokens }
-          : {}),
-        ...(usage.cache_creation_input_tokens != null
-          ? { cacheWriteTokens: usage.cache_creation_input_tokens }
-          : {}),
-      },
-      raw: json,
-    };
-  }
-
-  private async fetchWithTimeout(
-    url: string,
-    headers: Record<string, string>,
-    body: Record<string, unknown>,
-  ): Promise<Response> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    try {
-      return await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw new ProviderTimeoutError(this.providerName, this.timeoutMs);
-      }
-      throw err;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  private async safeReadText(response: Response): Promise<string> {
-    try {
-      return await response.text();
-    } catch {
-      return '';
-    }
-  }
-
-  private backoffMs(attempt: number): number {
-    // 1s after attempt 1, 2s after attempt 2.
-    return 1000 * attempt;
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
+function tryParseJson(text: string): unknown {
+  try { return JSON.parse(text); } catch { return text; }
 }
