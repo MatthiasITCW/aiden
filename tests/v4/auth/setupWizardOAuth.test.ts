@@ -12,7 +12,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-import { runSetupWizard } from '../../../cli/v4/setupWizard';
+import { runSetupWizard, PROVIDERS } from '../../../cli/v4/setupWizard';
 import {
   resolveAidenPaths,
   ensureAidenDirsExist,
@@ -95,6 +95,39 @@ function fakePrompts(answers: {
   };
 }
 
+/**
+ * Phase 30.2.1: scripted prompts for OAuth-decline / OAuth-fail tests.
+ * The wizard now loops back to provider pick on these paths instead of
+ * returning oauth-skipped/oauth-failed, so tests need a queue to feed
+ * a follow-up "pick a different provider" answer that terminates the
+ * outer loop deterministically.
+ */
+function scriptedPrompts(answers: {
+  choose: number[];
+  input?: string[];
+  confirm?: boolean[];
+}) {
+  const choose = [...answers.choose];
+  const input = [...(answers.input ?? [])];
+  const confirm = [...(answers.confirm ?? [])];
+  return {
+    async choose(_q: string, _choices: string[]) {
+      if (choose.length === 0) throw new Error('scriptedPrompts.choose: queue empty');
+      return choose.shift()!;
+    },
+    async input(_q: string, _opts?: any) {
+      return input.shift() ?? '';
+    },
+    async confirm(_q: string, _def?: boolean) {
+      return confirm.shift() ?? false;
+    },
+  };
+}
+
+const claudeProIdx = PROVIDERS.findIndex((p) => p.id === 'claude-pro') + 1;
+const chatgptPlusIdx = PROVIDERS.findIndex((p) => p.id === 'chatgpt-plus') + 1;
+const ollamaIdx = PROVIDERS.findIndex((p) => p.id === 'ollama') + 1;
+
 describe('setup wizard — OAuth provider integration (kind: pro)', () => {
   it('44. user picks claude-pro → confirm → login → tokens persisted + config written', async () => {
     const paths = resolveAidenPaths({ rootOverride: tmpRoot });
@@ -120,10 +153,12 @@ describe('setup wizard — OAuth provider integration (kind: pro)', () => {
       const result = await runSetupWizard({
         paths,
         display,
-        prompts: fakePrompts({ providerIndex: 1, confirm: true }),
+        // Phase 30.2.1: claude-pro moved to index [9] in the reordered list.
+        prompts: fakePrompts({ providerIndex: claudeProIdx, confirm: true }),
         skipValidation: true,
       });
 
+      expect(result.status).toBe('configured');
       expect(result.ran).toBe(true);
       expect(result.config?.model.provider).toBe('claude-pro');
       expect(result.config?.providers?.['claude-pro']).toEqual({
@@ -140,7 +175,12 @@ describe('setup wizard — OAuth provider integration (kind: pro)', () => {
     }
   });
 
-  it('45. user picks claude-pro → declines confirm → wizard returns oauth-skipped, no tokens', async () => {
+  it('45. user picks claude-pro → declines confirm → wizard loops back to provider pick (Phase 30.2.1)', async () => {
+    // Phase 30.2.1 — the prior `oauth-skipped` skipReason was replaced
+    // with `continue outer`, so a confirm-decline now loops back to the
+    // provider picker. We script a follow-up Ollama pick (probe stubbed
+    // ok) to terminate the loop with status='configured'. The key
+    // assertion is "no tokens persisted for claude-pro".
     const paths = resolveAidenPaths({ rootOverride: tmpRoot });
     await ensureAidenDirsExist(paths);
 
@@ -159,14 +199,23 @@ describe('setup wizard — OAuth provider integration (kind: pro)', () => {
     );
 
     try {
+      const fetchImpl = (async () => ({ ok: true } as Response)) as unknown as typeof fetch;
       const result = await runSetupWizard({
         paths,
         display: new Display(),
-        prompts: fakePrompts({ providerIndex: 1, confirm: false }),
+        prompts: scriptedPrompts({
+          choose: [claudeProIdx, ollamaIdx],
+          confirm: [false],
+          input: ['llama3.1:8b'],
+        }),
+        fetchImpl,
         skipValidation: true,
       });
-      expect(result.ran).toBe(false);
-      expect(result.skipReason).toBe('oauth-skipped');
+      // Loop ended on Ollama which configures successfully.
+      expect(result.status).toBe('configured');
+      expect(result.config?.model.provider).toBe('ollama');
+      // Critical: claude-pro tokens were NOT persisted because the user
+      // declined the OAuth confirm.
       expect(await loadTokens(paths, 'claude-pro')).toBeNull();
     } finally {
       restore();
@@ -196,10 +245,11 @@ describe('setup wizard — OAuth provider integration (kind: pro)', () => {
       const result = await runSetupWizard({
         paths,
         display: new Display(),
-        prompts: fakePrompts({ providerIndex: 2, confirm: true }),
+        // Phase 30.2.1: chatgpt-plus moved to index [10] in the reordered list.
+        prompts: fakePrompts({ providerIndex: chatgptPlusIdx, confirm: true }),
         skipValidation: true,
       });
-      expect(result.ran).toBe(true);
+      expect(result.status).toBe('configured');
       expect(result.config?.model.provider).toBe('chatgpt-plus');
       const tokens = await loadTokens(paths, 'chatgpt-plus');
       expect(tokens?.accessToken).toBe('gpt-AT');
@@ -209,7 +259,7 @@ describe('setup wizard — OAuth provider integration (kind: pro)', () => {
     }
   });
 
-  it('47. login throws → wizard returns oauth-failed, tokens not persisted', async () => {
+  it('47. login throws → wizard loops back to provider pick (Phase 30.2.1)', async () => {
     const paths = resolveAidenPaths({ rootOverride: tmpRoot });
     await ensureAidenDirsExist(paths);
 
@@ -241,14 +291,23 @@ describe('setup wizard — OAuth provider integration (kind: pro)', () => {
     });
 
     try {
+      const fetchImpl = (async () => ({ ok: true } as Response)) as unknown as typeof fetch;
       const result = await runSetupWizard({
         paths,
         display: new Display(),
-        prompts: fakePrompts({ providerIndex: 1, confirm: true }),
+        // Phase 30.2.1: login throws → continue outer → second pick is
+        // Ollama which terminates the loop with status='configured'.
+        // claude-pro tokens must remain unpersisted.
+        prompts: scriptedPrompts({
+          choose: [claudeProIdx, ollamaIdx],
+          confirm: [true /* user wants to proceed; login then throws */],
+          input: ['llama3.1:8b'],
+        }),
+        fetchImpl,
         skipValidation: true,
       });
-      expect(result.ran).toBe(false);
-      expect(result.skipReason).toBe('oauth-failed');
+      expect(result.status).toBe('configured');
+      expect(result.config?.model.provider).toBe('ollama');
       expect(await loadTokens(paths, 'claude-pro')).toBeNull();
     } finally {
       restore();

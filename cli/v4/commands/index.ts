@@ -37,6 +37,7 @@ import { auth } from './auth';
 import { license } from './license';
 import { doctor } from './doctor';
 import { cron } from './cron';
+import { setup } from './setup';
 
 export {
   help,
@@ -64,6 +65,7 @@ export {
   license,
   doctor,
   cron,
+  setup,
 };
 
 /** All built-in system commands, in canonical order. */
@@ -88,6 +90,7 @@ export const allCommands: SlashCommand[] = [
   license,
   doctor,
   cron,
+  setup,
   reloadMcp,
   reasoning,
   verbose,

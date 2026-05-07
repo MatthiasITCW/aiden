@@ -1,3 +1,123 @@
+## v4.0.2 — 2026-05-07 · UX patch (setup wizard + explore mode)
+
+First-impression bug fix release. A user reinstalling Aiden from
+scratch saw the boot card with a placeholder model name and got a
+"provider chatgpt-plus rate limited" error on their first chat
+because the resolver auto-picked a provider that wasn't actually
+authed. Phase 30.2 + 30.2.1 rebuild the fresh-user path so the
+wizard fires reliably, the boot card never lies, and a user who
+fat-fingers their key three times has five recoverable paths
+instead of a dead-end exit.
+
+### Fixed
+
+- **Fresh-user setup wizard now auto-triggers** when no provider
+  is configured. New `core/v4/firstRun/providerDetection.ts`
+  module probes env vars, OAuth tokens at `<aiden-home>/auth/`,
+  Ollama on `localhost:11434`, and inline `providers.<id>.apiKey`
+  in `config.yaml` — all in under 100 ms. The boot path fires the
+  wizard if any of: nothing detected, configured provider has no
+  matching credentials, or `config.yaml` is fresh.
+- **Boot card no longer shows a placeholder model** when no
+  provider is authed. `Display.statusPillsRow` now accepts an
+  optional `providerOk` flag; when false the model pill renders
+  "not configured" with a muted dot instead of the
+  DEFAULT_CONFIG fallback ("gpt-5.3-codex" was the v4.0.1 surprise).
+
+### Added
+
+- **Wizard recovery menu** after 3 failed key-validation attempts.
+  Replaces the prior dead-end `throw new Error('3 attempts')`
+  with five recoverable paths:
+    - `[1]` Try a different provider — loops back to the picker
+    - `[2]` Get a key from `<provider URL>` — opens the browser
+      (Windows `cmd /c start ""`, macOS `open`, Linux `xdg-open`)
+      and re-prompts for 3 fresh attempts
+    - `[3]` Save without validation — writes config; key tested
+      on first chat
+    - `[4]` Skip — explore Aiden first (REPL boots without a
+      provider; chat is gated, slash commands work)
+    - `[5]` Exit (try again later) — clean exit
+  Same menu fires when the OAuth confirm prompt is declined or
+  when Ollama is unreachable.
+- **Explore mode** — wizard returns one of three statuses:
+  `'configured' | 'skipped' | 'exited'`. On `'skipped'` the boot
+  path uses a `NullAdapter` (`providers/v4/nullAdapter.ts`) so
+  `AidenAgent` constructs cleanly; `ChatSession.runAgentTurn`
+  short-circuits any non-slash input with a friendly redirect
+  to `/setup`. `/help`, `/skills`, `/providers`, `/tools`,
+  `/setup`, `/auth`, `/quit` all work with no provider authed.
+- **`/setup` slash command** to re-launch the wizard from inside
+  an active REPL. After saving, prompts the user to restart Aiden
+  so the new provider is picked up (hot-swap is v4.1).
+- **`install.ps1` `[0/4]` step** detects existing installations
+  in `$env:APPDATA\aiden`, `$env:LOCALAPPDATA\aiden`, and
+  `npm list -g aiden-runtime`. Offers `[1]` Fresh install (wipes
+  config + npm uninstalls), `[2]` Update only (npm install -g
+  upgrades in place), or `[3]` Cancel. Non-interactive sessions
+  default to update-only (the safer non-destructive path).
+- **`install.ps1` honest progress feedback** during npm install.
+  Uses `Write-Progress` with `-PercentComplete -1` (indeterminate
+  spinner) and updates the Status line on each visible npm output
+  line. Parses `added N packages` for a real count. Zero fake
+  percentages; `-Completed` clears the bar at exit.
+
+### Changed
+
+- **Groq is now the recommended default provider** (replacing
+  Together AI). Free tier, fastest signup, no surprise charges
+  for first-time users. Provider list reordered to surface free
+  tiers first:
+    1. Groq (free, fast)
+    2. Google Gemini (free)
+    3. OpenRouter (free credits)
+    4. NVIDIA NIM (free)
+    5. Ollama (offline)
+    6. Anthropic (paid)
+    7. OpenAI (paid)
+    8. Together AI (paid)
+    9. Claude Pro subscription
+    10. ChatGPT Plus subscription
+- **Plain-English provider descriptions.** "TPM cap" →
+  "limited messages per minute"; "tier 1 paid" → "best for
+  complex tasks"; "Ollama (Local, no internet)" → "fully
+  offline, no key needed (requires Ollama install)". After
+  the provider is picked, subsequent prompts (model picker,
+  API-key input) use a short label ("Groq") instead of
+  restating the full description.
+- **`isFreshInstall`-only wizard gate replaced** with the
+  multi-signal `detectAvailableProviders` check. Closes the
+  scenario where a stale `chatgpt-plus` config + missing
+  OAuth token file would silently reach the resolver and
+  surface as a confusing rate-limit error on the user's
+  first chat.
+
+### Test impact
+
+- 4 wizard test files updated for new provider order, new
+  `status` field, and the recovery-menu replacing the
+  3-attempt throw: `setupWizard.test.ts`,
+  `setupWizard.validation.test.ts`, `setupWizardOAuth.test.ts`,
+  `commands.test.ts`.
+- New self-smokes: `scripts/smoke-30.2.ts` (35 unit checks),
+  `scripts/smoke-30.2.1.ts` (57 unit checks),
+  `scripts/smoke-30.2-live.ts` (6 live boot checks against a
+  tempdir `AIDEN_HOME`).
+- vitest baseline unchanged: 17 failed / 1552 passed (same as
+  Phase 30 diagnosis — pre-existing test-runner / content drift,
+  documented in `docs/sprint/_internal/ci-diagnosis.md`).
+
+### Files
+
+- New: `core/v4/firstRun/providerDetection.ts`,
+  `providers/v4/nullAdapter.ts`, `cli/v4/commands/setup.ts`,
+  `installer/aiden-releases-install.ps1`.
+- Edited: `cli/v4/aidenCLI.ts`, `cli/v4/setupWizard.ts`,
+  `cli/v4/chatSession.ts`, `cli/v4/display.ts`,
+  `cli/v4/commands/index.ts`.
+
+---
+
 ## v4.0.1 — 2026-05-07 · security patch
 
 Security patch covering 15 Dependabot alerts (10 high, 5 medium, 0

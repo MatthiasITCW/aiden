@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { runSetupWizard, type PromptIO } from '../../../cli/v4/setupWizard';
+import { runSetupWizard, PROVIDERS, type PromptIO } from '../../../cli/v4/setupWizard';
 import { Display } from '../../../cli/v4/display';
 import { SkinEngine } from '../../../cli/v4/skinEngine';
 import type { AidenPaths } from '../../../core/v4/paths';
@@ -102,16 +102,21 @@ describe('SetupWizard validation', () => {
     paths = makePaths(tmp);
   });
 
-  it('valid key on first try → wizard returns ran:true and writes config', async () => {
+  // Phase 30.2.1: Anthropic moved from index [4] to index [6] in the
+  // reordered PROVIDERS list. Resolve dynamically so future reorders
+  // don't silently drift.
+  const anthIdx = (): number => PROVIDERS.findIndex((p) => p.id === 'anthropic') + 1;
+
+  it('valid key on first try → wizard returns status=configured and writes config', async () => {
     const { display, chunks } = sinkDisplay();
     const { validator, callCount } = queuedValidator([{ valid: true }]);
     const result = await runSetupWizard({
       paths,
       display,
-      // Anthropic [4], model index 1
-      prompts: scriptedPrompts({ choose: [4, 1], input: ['sk-ant-good'] }),
+      prompts: scriptedPrompts({ choose: [anthIdx(), 1], input: ['sk-ant-good'] }),
       validator: validator as never,
     });
+    expect(result.status).toBe('configured');
     expect(result.ran).toBe(true);
     expect(callCount()).toBe(1);
     expect(chunks.join('')).toMatch(/validated/);
@@ -129,42 +134,63 @@ describe('SetupWizard validation', () => {
       paths,
       display,
       prompts: scriptedPrompts({
-        choose: [4, 1],
-        input: ['bad-key', 'good-key'], // first key, then re-prompt
+        choose: [anthIdx(), 1],
+        input: ['bad-key', 'good-key'],
       }),
       validator: validator as never,
     });
-    expect(result.ran).toBe(true);
+    expect(result.status).toBe('configured');
     expect(callCount()).toBe(2);
     expect(chunks.join('')).toMatch(/Validation failed/);
     const env = await fs.readFile(paths.envFile, 'utf8');
-    // Final saved key is the second one.
     expect(env).toMatch(/ANTHROPIC_API_KEY=good-key/);
     expect(env).not.toMatch(/ANTHROPIC_API_KEY=bad-key/);
   });
 
-  it('3 invalid attempts → throws "3 attempts" message; nothing written', async () => {
+  it('3 invalid attempts → recovery menu fires; option [5] (exit) returns status=exited', async () => {
+    // Phase 30.2.1: the prior `throw new Error('3 attempts')` was
+    // replaced with a 5-option recovery menu. With option [5] (exit)
+    // the wizard returns cleanly without writing config/env.
     const { display } = sinkDisplay();
     const { validator, callCount } = queuedValidator([
       { valid: false, reason: 'Invalid API key' },
       { valid: false, reason: 'Invalid API key' },
       { valid: false, reason: 'Invalid API key' },
     ]);
-    await expect(
-      runSetupWizard({
-        paths,
-        display,
-        prompts: scriptedPrompts({
-          choose: [4, 1],
-          input: ['bad1', 'bad2', 'bad3'],
-        }),
-        validator: validator as never,
+    const result = await runSetupWizard({
+      paths,
+      display,
+      prompts: scriptedPrompts({
+        choose: [anthIdx(), 1, 5 /* recovery: Exit */],
+        input: ['bad1', 'bad2', 'bad3'],
       }),
-    ).rejects.toThrow(/3 attempts/);
+      validator: validator as never,
+    });
+    expect(result.status).toBe('exited');
     expect(callCount()).toBe(3);
     // Nothing should have been written.
     await expect(fs.access(paths.configYaml)).rejects.toBeTruthy();
     await expect(fs.access(paths.envFile)).rejects.toBeTruthy();
+  });
+
+  it('3 invalid attempts → recovery menu option [4] (skip) returns status=skipped', async () => {
+    // Phase 30.2.1 — explore mode entry point. Boot path treats this
+    // as "enter REPL with NullAdapter" (verified in aidenCLI wiring).
+    const { display } = sinkDisplay();
+    const { validator } = queuedValidator([
+      { valid: false }, { valid: false }, { valid: false },
+    ]);
+    const result = await runSetupWizard({
+      paths,
+      display,
+      prompts: scriptedPrompts({
+        choose: [anthIdx(), 1, 4 /* recovery: Skip — explore mode */],
+        input: ['bad1', 'bad2', 'bad3'],
+      }),
+      validator: validator as never,
+    });
+    expect(result.status).toBe('skipped');
+    expect(result.ran).toBe(false);
   });
 
   it('smokeTest:true → validator NEVER called', async () => {
@@ -173,7 +199,7 @@ describe('SetupWizard validation', () => {
     const result = await runSetupWizard({
       paths,
       display,
-      prompts: scriptedPrompts({ choose: [4, 1], input: ['anything'] }),
+      prompts: scriptedPrompts({ choose: [anthIdx(), 1], input: ['anything'] }),
       smokeTest: true,
       validator: validator as never,
     });
@@ -187,12 +213,12 @@ describe('SetupWizard validation', () => {
     const result = await runSetupWizard({
       paths,
       display,
-      prompts: scriptedPrompts({ choose: [4, 1], input: ['untrusted-key'] }),
+      prompts: scriptedPrompts({ choose: [anthIdx(), 1], input: ['untrusted-key'] }),
       skipValidation: true,
       validator: validator as never,
     });
     expect(callCount()).toBe(0);
-    expect(result.ran).toBe(true);
+    expect(result.status).toBe('configured');
     const env = await fs.readFile(paths.envFile, 'utf8');
     expect(env).toMatch(/ANTHROPIC_API_KEY=untrusted-key/);
   });

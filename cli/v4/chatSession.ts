@@ -116,6 +116,20 @@ export interface ChatSessionOptions {
    * `run()` returns; production omits and the loop is unbounded.
    */
   maxIterations?: number;
+
+  /**
+   * Phase 30.2.1 — explore mode. True when the setup wizard returned
+   * status 'skipped' (recovery option [4] or wizard cancellation), so
+   * the agent's adapter is a `NullAdapter`. Slash commands run normally;
+   * any non-slash input is intercepted by `runAgentTurn` and surfaces
+   * the friendly "no provider configured" message instead of calling
+   * the agent loop.
+   *
+   * The boot card also keys off this flag — `providerOk` is passed as
+   * `false` so the model pill renders "not configured" instead of a
+   * stale model id from DEFAULT_CONFIG.
+   */
+  unconfigured?: boolean;
 }
 
 const STATUS_BAR_WIDTH = 10;
@@ -302,6 +316,22 @@ export class ChatSession implements ChatSessionLike {
 
   // ── Inner: a single agent turn ─────────────────────────────────────
   private async runAgentTurn(userInput: string): Promise<void> {
+    // Phase 30.2.1 — explore mode: short-circuit BEFORE building the
+    // turn-status spinner / agent call. The wizard skipped, so there's
+    // no real provider to talk to. Print a friendly redirect to /setup
+    // (or the env-var alternative) and return — REPL stays alive, user
+    // can run slash commands or hit /quit.
+    if (this.opts.unconfigured) {
+      void userInput; // silence unused-arg warning when this branch fires
+      this.opts.display.write('\n');
+      this.opts.display.printError(
+        'No AI provider configured yet.',
+        'Run /setup to configure a provider, or set an API key environment variable (e.g. GROQ_API_KEY).',
+      );
+      this.opts.display.write('\n');
+      return;
+    }
+
     // Phase 22 Task 4: status bar reflects the live phase. Set on
     // entry, cleared in both success and error paths below.
     this.setStatusState({ kind: 'generating', sinceMs: Date.now() });
@@ -461,12 +491,16 @@ export class ChatSession implements ChatSessionLike {
     }
 
     // PIECE 1 — status pills row.
+    // Phase 30.2.1: in explore mode the model pill renders "not
+    // configured" instead of the DEFAULT_CONFIG fallback, so a fresh
+    // user who skipped the wizard isn't misled by a stale model name.
     display.write(
       display.statusPillsRow({
         coreOnline: true,
         mode: 'auto',
         model: this.currentModelId,
         memoryActive: true,
+        providerOk: !this.opts.unconfigured,
       }) + '\n',
     );
     display.write(`  ${display.rule()}\n`);

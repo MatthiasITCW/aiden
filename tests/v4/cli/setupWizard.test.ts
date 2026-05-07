@@ -121,37 +121,46 @@ describe('SetupWizard', () => {
     expect(PROVIDERS).toHaveLength(19);
   });
 
-  it('wizard pre-selects Together AI as the recommended provider default', async () => {
-    // Phase 22 Task 1: Together is the fastest path to a working REPL —
-    // the wizard's first choose() call should pass Together's index as
-    // defaultIndex so Enter accepts it.
-    const expectedIdx = PROVIDERS.findIndex((p) => p.id === 'together') + 1;
+  it('wizard pre-selects Groq as the recommended provider default', async () => {
+    // Phase 30.2.1: Groq replaced Together as the recommended default —
+    // free tier, fastest signup, no surprise charges. The wizard's
+    // first choose() call must pass Groq's 1-based index as defaultIndex.
+    const expectedIdx = PROVIDERS.findIndex((p) => p.id === 'groq') + 1;
     expect(expectedIdx).toBeGreaterThan(0);
     const { display } = sinkDisplay();
-    const prompts = scriptedPrompts({ choose: [expectedIdx, 1], input: ['tg-key'] });
+    // Groq has 3 models → second choose is model picker, take [1].
+    const prompts = scriptedPrompts({
+      choose: [expectedIdx, 1],
+      input: ['gsk-test'],
+    });
     const result = await runSetupWizard({
       paths,
       display,
       prompts,
       skipValidation: true,
     });
+    expect(result.status).toBe('configured');
     expect(result.ran).toBe(true);
-    expect(result.config?.model.provider).toBe('together');
-    // The first choose() call was the provider picker — its defaultIndex
-    // arg must equal Together's 1-based index.
+    expect(result.config?.model.provider).toBe('groq');
     expect(prompts.defaultIndexCalls[0]).toBe(expectedIdx);
   });
 
-  it('wizard prints the "Press Enter to accept the recommended" hint', async () => {
+  it('wizard prints the "Press Enter to accept Groq" hint', async () => {
+    // Phase 30.2.1 — hint text changed alongside the default flip.
+    // Use Ollama (kind=local) with a stubbed-reachable probe so the
+    // wizard exits cleanly without needing API-key input.
+    const fetchImpl = (async () => ({ ok: true } as Response)) as unknown as typeof fetch;
+    const ollamaIdx = PROVIDERS.findIndex((p) => p.id === 'ollama') + 1;
     const { display, chunks } = sinkDisplay();
     await runSetupWizard({
       paths,
       display,
-      prompts: scriptedPrompts({ choose: [1], confirm: [false] }),
+      prompts: scriptedPrompts({ choose: [ollamaIdx], input: ['llama3.1:8b'] }),
+      fetchImpl,
     });
     const text = chunks.join('\n');
-    expect(text).toMatch(/Press Enter to accept the recommended Together AI/i);
-    expect(text).toMatch(/fastest path to a working REPL/i);
+    expect(text).toMatch(/Press Enter to accept Groq/i);
+    expect(text).toMatch(/free \+ fastest setup/i);
   });
 
   it('skips when config exists with providers and force=false', async () => {
@@ -171,47 +180,69 @@ describe('SetupWizard', () => {
     expect(result.skipReason).toMatch(/already exists/);
   });
 
-  it('Pro option [1] (Claude Pro) prints OAuth explainer + beta note then waits for confirm', async () => {
+  it('Pro option Claude Pro prints OAuth explainer + beta note then waits for confirm', async () => {
     // Phase 18 Task 4 made these real OAuth flows; Phase 18.1 added the
-    // beta note. With confirm: [false], the user declines and the wizard
-    // returns oauth-skipped.
+    // beta note. Phase 30.2.1 reordered providers (Claude Pro → index 9)
+    // and converted OAuth declines from the dead-end `oauth-skipped`
+    // skipReason into a `continue outer` that loops back to provider
+    // pick. Test harness scripts the OAuth decline followed by an
+    // immediate Ollama exit so the loop terminates deterministically.
+    const claudeProIdx = PROVIDERS.findIndex((p) => p.id === 'claude-pro') + 1;
+    const ollamaIdx = PROVIDERS.findIndex((p) => p.id === 'ollama') + 1;
+    const fetchImpl = (async () => ({ ok: true } as Response)) as unknown as typeof fetch;
     const { display, chunks } = sinkDisplay();
     const result = await runSetupWizard({
       paths,
       display,
-      prompts: scriptedPrompts({ choose: [1], confirm: [false] }),
+      prompts: scriptedPrompts({
+        choose: [claudeProIdx, ollamaIdx],
+        confirm: [false],
+        input: ['llama3.1:8b'],
+      }),
+      fetchImpl,
     });
-    expect(result.ran).toBe(false);
-    expect(result.skipReason).toBe('oauth-skipped');
+    // Loop ended on Ollama which configures successfully.
+    expect(result.status).toBe('configured');
     const text = chunks.join('\n');
     expect(text).toMatch(/Claude Pro/);
     expect(text).toMatch(/OAuth flows are beta in v4\.0/);
+    // Confirms the decline path printed the loop-back message.
+    expect(text).toMatch(/pick another provider/i);
   });
 
-  it('Pro option [2] (ChatGPT Plus) prints OAuth explainer + beta note then waits for confirm', async () => {
+  it('Pro option ChatGPT Plus prints OAuth explainer + beta note then waits for confirm', async () => {
+    const chatgptPlusIdx = PROVIDERS.findIndex((p) => p.id === 'chatgpt-plus') + 1;
+    const ollamaIdx = PROVIDERS.findIndex((p) => p.id === 'ollama') + 1;
+    const fetchImpl = (async () => ({ ok: true } as Response)) as unknown as typeof fetch;
     const { display, chunks } = sinkDisplay();
     const result = await runSetupWizard({
       paths,
       display,
-      prompts: scriptedPrompts({ choose: [2], confirm: [false] }),
+      prompts: scriptedPrompts({
+        choose: [chatgptPlusIdx, ollamaIdx],
+        confirm: [false],
+        input: ['llama3.1:8b'],
+      }),
+      fetchImpl,
     });
-    expect(result.ran).toBe(false);
-    expect(result.skipReason).toBe('oauth-skipped');
+    expect(result.status).toBe('configured');
     const text = chunks.join('\n');
     expect(text).toMatch(/ChatGPT Plus/);
     expect(text).toMatch(/OAuth flows are beta in v4\.0/);
   });
 
   it('API-key provider saves config.yaml + writes .env', async () => {
-    // Anthropic is option [4]; it has 3 models so a model index is needed.
+    // Phase 30.2.1: Anthropic moved to option [6]. It still has 3 models
+    // so the second choose() picks the first model.
+    const anthIdx = PROVIDERS.findIndex((p) => p.id === 'anthropic') + 1;
     const { display } = sinkDisplay();
     const result = await runSetupWizard({
       paths,
       display,
-      prompts: scriptedPrompts({ choose: [4, 1], input: ['sk-ant-test'] }),
+      prompts: scriptedPrompts({ choose: [anthIdx, 1], input: ['sk-ant-test'] }),
       skipValidation: true,
     });
-    expect(result.ran).toBe(true);
+    expect(result.status).toBe('configured');
     expect(result.config?.model.provider).toBe('anthropic');
     expect(result.config?.model.modelId).toBe('claude-opus-4-7');
     const env = await fs.readFile(paths.envFile, 'utf8');
@@ -221,35 +252,36 @@ describe('SetupWizard', () => {
   });
 
   it('model is filtered by provider', async () => {
-    // Phase 16f: providers reordered (Together moved above Groq as the
-    // recommended primary). Groq is now option [7] with 3 models.
+    // Phase 30.2.1: Groq is now option [1] with 3 models.
     // Pick model index 2 → llama-3.1-8b-instant.
+    const groqIdx = PROVIDERS.findIndex((p) => p.id === 'groq') + 1;
     const { display } = sinkDisplay();
     const result = await runSetupWizard({
       paths,
       display,
-      prompts: scriptedPrompts({ choose: [7, 2], input: ['gsk-test'] }),
+      prompts: scriptedPrompts({ choose: [groqIdx, 2], input: ['gsk-test'] }),
       skipValidation: true,
     });
-    expect(result.ran).toBe(true);
+    expect(result.status).toBe('configured');
     expect(result.config?.model.provider).toBe('groq');
     expect(result.config?.model.modelId).toBe('llama-3.1-8b-instant');
   });
 
   it('Custom OpenAI-compatible collects baseUrl + apiKey', async () => {
-    // Custom is option [18]
+    // Phase 30.2.1: Custom moved to the end of the list (last entry).
+    const customIdx = PROVIDERS.findIndex((p) => p.id === 'custom') + 1;
     const { display } = sinkDisplay();
     const result = await runSetupWizard({
       paths,
       display,
       prompts: scriptedPrompts({
-        choose: [18],
+        choose: [customIdx],
         input: ['', 'https://api.example.com/v1', 'custom-key'],
         // first input is the model id (provider has no defaultModel)
       }),
       skipValidation: true,
     });
-    expect(result.ran).toBe(true);
+    expect(result.status).toBe('configured');
     expect(result.config?.model.provider).toBe('custom');
     const env = await fs.readFile(paths.envFile, 'utf8');
     expect(env).toMatch(/CUSTOM_BASE_URL=https:\/\/api\.example\.com\/v1/);
@@ -257,6 +289,8 @@ describe('SetupWizard', () => {
   });
 
   it('Ollama option probes the local server', async () => {
+    // Phase 30.2.1: Ollama moved to option [5].
+    const ollamaIdx = PROVIDERS.findIndex((p) => p.id === 'ollama') + 1;
     let probed = false;
     const fetchImpl = (async (url: string) => {
       probed = true;
@@ -268,15 +302,23 @@ describe('SetupWizard', () => {
     const result = await runSetupWizard({
       paths,
       display,
-      prompts: scriptedPrompts({ choose: [19], input: ['llama3.1:8b'] }),
+      prompts: scriptedPrompts({ choose: [ollamaIdx], input: ['llama3.1:8b'] }),
       fetchImpl,
     });
     expect(probed).toBe(true);
-    expect(result.ran).toBe(true);
+    expect(result.status).toBe('configured');
     expect(result.config?.model.provider).toBe('ollama');
   });
 
-  it('Ollama unreachable surfaces install hint', async () => {
+  it('Ollama unreachable loops back to provider pick (recovery flow)', async () => {
+    // Phase 30.2.1: when Ollama is unreachable the wizard no longer
+    // dead-ends with `ollama-not-reachable`. It logs the install hint
+    // and `continue outer`s back to the provider picker, so the test
+    // scripts a second pick (Groq with skipValidation) to terminate
+    // the outer loop with status='configured'. The install hint is
+    // still asserted on the captured display chunks.
+    const ollamaIdx = PROVIDERS.findIndex((p) => p.id === 'ollama') + 1;
+    const groqIdx = PROVIDERS.findIndex((p) => p.id === 'groq') + 1;
     const fetchImpl = (async () => {
       throw new Error('ECONNREFUSED');
     }) as unknown as typeof fetch;
@@ -284,38 +326,48 @@ describe('SetupWizard', () => {
     const result = await runSetupWizard({
       paths,
       display,
-      prompts: scriptedPrompts({ choose: [19], input: ['llama3.1:8b'] }),
+      prompts: scriptedPrompts({
+        choose: [ollamaIdx, groqIdx, 1],
+        input: ['llama3.1:8b', 'gsk-test'],
+      }),
       fetchImpl,
+      skipValidation: true,
     });
-    expect(result.ran).toBe(false);
-    expect(result.skipReason).toBe('ollama-not-reachable');
+    expect(result.status).toBe('configured');
+    expect(result.config?.model.provider).toBe('groq');
     expect(chunks.join('\n')).toMatch(/ollama\.com/);
   });
 
   it('force=true re-runs even when config exists', async () => {
+    // Phase 30.2.1: Anthropic at index 6 now.
+    const anthIdx = PROVIDERS.findIndex((p) => p.id === 'anthropic') + 1;
     await fs.mkdir(path.dirname(paths.configYaml), { recursive: true });
     await fs.writeFile(paths.configYaml, 'model:\n  provider: oldprov\n');
     const { display } = sinkDisplay();
     const result = await runSetupWizard({
       paths,
       display,
-      prompts: scriptedPrompts({ choose: [4, 1], input: ['sk-ant-2'] }),
+      prompts: scriptedPrompts({ choose: [anthIdx, 1], input: ['sk-ant-2'] }),
       force: true,
       skipValidation: true,
     });
-    expect(result.ran).toBe(true);
+    expect(result.status).toBe('configured');
     expect(result.config?.model.provider).toBe('anthropic');
   });
 
   it('banner is shown at start', async () => {
+    // Phase 30.2.1: pick Ollama with successful probe so the wizard
+    // exits cleanly through the API-key-less path. Banner prints
+    // before the provider picker regardless.
+    const ollamaIdx = PROVIDERS.findIndex((p) => p.id === 'ollama') + 1;
+    const fetchImpl = (async () => ({ ok: true } as Response)) as unknown as typeof fetch;
     const { display, chunks } = sinkDisplay();
     await runSetupWizard({
       paths,
       display,
-      prompts: scriptedPrompts({ choose: [1] }), // pro stub — short-circuit, but banner runs first
+      prompts: scriptedPrompts({ choose: [ollamaIdx], input: ['llama3.1:8b'] }),
+      fetchImpl,
     });
-    // Phase 23.6: banner is the AIDEN ASCII block (no "Aiden vX.Y"
-    // tagline anymore).  Verify the block by its top edge instead.
     expect(chunks.join('\n')).toMatch(/█████╗/);
   });
 

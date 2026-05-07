@@ -48,7 +48,17 @@ import { boxBottom, boxLine, boxTopTitled } from './box';
 
 export interface ProviderOption {
   id: string;
+  /**
+   * Picker label — `<shortLabel> — <description>` format. Shown only
+   * in the provider-pick step. Phase 30.2.1 plain-English labels.
+   */
   label: string;
+  /**
+   * Short provider name used in subsequent prompts ("Pick a model for
+   * Groq", "API key for Groq"). Phase 30.2.1 dropped the parenthetical
+   * description from those prompts to reduce wall-of-text fatigue.
+   */
+  shortLabel: string;
   /** "pro" = subscription stub, "oauth" = OAuth (also stubbed for now), "key" = API key, "custom" = baseUrl+key, "local" = Ollama. */
   kind: 'pro' | 'oauth' | 'key' | 'custom' | 'local' | 'subscription';
   /** ENV var name where API key is stored (.env on save). Optional for non-key providers. */
@@ -57,43 +67,101 @@ export interface ProviderOption {
   defaultModel?: string;
   /** Curated model list (subset is shown to the user). */
   models?: string[];
+  /**
+   * Phase 30.2.1 — URL the recovery menu's "Get a key" branch opens
+   * in the user's default browser. Only the providers offered in the
+   * top picker have this; legacy/edge entries (custom, nous, hf,
+   * vercel, etc.) intentionally omit it so the recovery branch falls
+   * through to "Try a different provider".
+   */
+  keyUrl?: string;
 }
 
+// Phase 30.2.1 — provider order optimised for new-user time-to-first-chat.
+// Free providers first (Groq → Gemini → OpenRouter → NVIDIA → Ollama),
+// paid providers next (Anthropic, OpenAI, Together), subscription
+// sign-ins last. The legacy entries (deepseek, mistral, zai, kimi,
+// minimax, huggingface, vercel, nous, custom) trail the top 10 — still
+// pickable for power users, never the default.
+//
+// Plain-English descriptions per spec — "TPM cap" replaced with
+// "limited messages per minute", "tier 1 paid" with "best for complex
+// tasks", etc. Subsequent prompts use `shortLabel` (e.g. just "Groq")
+// to avoid restating the description.
 export const PROVIDERS: ProviderOption[] = [
-  { id: 'claude-pro', label: 'Use my Claude Pro/Max subscription', kind: 'pro' },
-  { id: 'chatgpt-plus', label: 'Use my ChatGPT Plus subscription', kind: 'pro' },
+  // ── Free tier / no-cost ──
   {
-    id: 'nous',
-    label: 'Nous Portal (subscription, zero-config)',
-    kind: 'subscription',
-    defaultModel: 'hermes-3-llama-3.1-405b',
+    id: 'groq',
+    shortLabel: 'Groq',
+    label: 'Groq — free, fast, limited messages per minute',
+    kind: 'key',
+    envVar: 'GROQ_API_KEY',
+    keyUrl: 'https://console.groq.com/keys',
+    defaultModel: 'llama-3.3-70b-versatile',
+    models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768'],
   },
   {
+    id: 'gemini',
+    shortLabel: 'Google Gemini',
+    label: 'Google Gemini — free, generous limits',
+    kind: 'key',
+    envVar: 'GEMINI_API_KEY',
+    keyUrl: 'https://aistudio.google.com/apikey',
+    defaultModel: 'gemini-2.0-flash',
+  },
+  {
+    id: 'openrouter',
+    shortLabel: 'OpenRouter',
+    label: 'OpenRouter — free credits, then paid',
+    kind: 'key',
+    envVar: 'OPENROUTER_API_KEY',
+    keyUrl: 'https://openrouter.ai/keys',
+    defaultModel: 'anthropic/claude-opus-4',
+  },
+  {
+    id: 'nvidia',
+    shortLabel: 'NVIDIA NIM',
+    label: 'NVIDIA NIM — free, but rate-limited',
+    kind: 'key',
+    envVar: 'NVIDIA_API_KEY',
+    keyUrl: 'https://build.nvidia.com',
+    defaultModel: 'meta/llama-3.3-70b-instruct',
+  },
+  {
+    id: 'ollama',
+    shortLabel: 'Ollama',
+    label: 'Ollama — fully offline, no key needed (requires Ollama install)',
+    kind: 'local',
+    defaultModel: 'llama3.1:8b',
+  },
+  // ── Paid (best quality) ──
+  {
     id: 'anthropic',
-    label: 'Anthropic API key',
+    shortLabel: 'Anthropic',
+    label: 'Anthropic — paid, best for complex tasks',
     kind: 'key',
     envVar: 'ANTHROPIC_API_KEY',
+    keyUrl: 'https://console.anthropic.com/settings/keys',
     defaultModel: 'claude-opus-4-7',
     models: ['claude-opus-4-7', 'claude-sonnet-4-5', 'claude-haiku-4-5'],
   },
   {
     id: 'openai',
-    label: 'OpenAI API key',
+    shortLabel: 'OpenAI',
+    label: 'OpenAI — paid, GPT models',
     kind: 'key',
     envVar: 'OPENAI_API_KEY',
+    keyUrl: 'https://platform.openai.com/api-keys',
     defaultModel: 'gpt-5',
     models: ['gpt-5', 'gpt-4o', 'gpt-4o-mini'],
   },
   {
     id: 'together',
-    // Phase 16f: Together + Qwen3 is the recommended primary — strong tool
-    // calling, $0.20/M throughput tier, 131k context. Free $5-10 credit on
-    // signup covers a few hundred turns. Replaces Groq free tier as the
-    // first recommendation after the user's Groq slots kept hammering
-    // simultaneous 429s within 2 turns of normal use.
-    label: 'Together AI (recommended — Qwen3-235B, paid throughput tier)',
+    shortLabel: 'Together AI',
+    label: 'Together AI — paid, fast & reliable',
     kind: 'key',
     envVar: 'TOGETHER_API_KEY',
+    keyUrl: 'https://api.together.xyz/settings/api-keys',
     defaultModel: 'Qwen/Qwen3-235B-A22B-Instruct-2507-tput',
     models: [
       'Qwen/Qwen3-235B-A22B-Instruct-2507-tput',
@@ -101,74 +169,91 @@ export const PROVIDERS: ProviderOption[] = [
       'deepseek-ai/DeepSeek-V3',
     ],
   },
+  // ── Subscription sign-ins ──
   {
-    id: 'groq',
-    label: 'Groq (free tier — fast but tight TPM cap)',
-    kind: 'key',
-    envVar: 'GROQ_API_KEY',
-    defaultModel: 'llama-3.3-70b-versatile',
-    models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768'],
+    id: 'claude-pro',
+    shortLabel: 'Claude Pro',
+    label: 'Claude Pro — use your existing Claude subscription',
+    kind: 'pro',
   },
   {
-    id: 'openrouter',
-    label: 'OpenRouter (200+ models)',
-    kind: 'key',
-    envVar: 'OPENROUTER_API_KEY',
-    defaultModel: 'anthropic/claude-opus-4',
+    id: 'chatgpt-plus',
+    shortLabel: 'ChatGPT Plus',
+    label: 'ChatGPT Plus — use your existing ChatGPT subscription',
+    kind: 'pro',
   },
-  {
-    id: 'gemini',
-    label: 'Google Gemini (free tier)',
-    kind: 'key',
-    envVar: 'GEMINI_API_KEY',
-    defaultModel: 'gemini-2.0-flash',
-  },
+  // ── Legacy / power-user entries (kept to preserve env-var detection
+  // for users who already configured these out-of-band) ──
   {
     id: 'deepseek',
-    label: 'DeepSeek',
+    shortLabel: 'DeepSeek',
+    label: 'DeepSeek — paid',
     kind: 'key',
     envVar: 'DEEPSEEK_API_KEY',
     defaultModel: 'deepseek-chat',
   },
   {
     id: 'mistral',
-    label: 'Mistral',
+    shortLabel: 'Mistral',
+    label: 'Mistral — paid',
     kind: 'key',
     envVar: 'MISTRAL_API_KEY',
     defaultModel: 'mistral-large-latest',
   },
-  { id: 'zai', label: 'Z.AI / GLM', kind: 'key', envVar: 'ZAI_API_KEY', defaultModel: 'glm-4-plus' },
+  {
+    id: 'zai',
+    shortLabel: 'Z.AI',
+    label: 'Z.AI / GLM — paid',
+    kind: 'key',
+    envVar: 'ZAI_API_KEY',
+    defaultModel: 'glm-4-plus',
+  },
   {
     id: 'kimi',
-    label: 'Kimi / Moonshot',
+    shortLabel: 'Kimi',
+    label: 'Kimi / Moonshot — paid',
     kind: 'key',
     envVar: 'MOONSHOT_API_KEY',
     defaultModel: 'moonshot-v1-128k',
   },
-  { id: 'minimax', label: 'MiniMax', kind: 'key', envVar: 'MINIMAX_API_KEY', defaultModel: 'abab6.5s-chat' },
   {
-    id: 'nvidia',
-    label: 'NVIDIA NIM (free tier)',
+    id: 'minimax',
+    shortLabel: 'MiniMax',
+    label: 'MiniMax — paid',
     kind: 'key',
-    envVar: 'NVIDIA_API_KEY',
-    defaultModel: 'meta/llama-3.3-70b-instruct',
+    envVar: 'MINIMAX_API_KEY',
+    defaultModel: 'abab6.5s-chat',
   },
   {
     id: 'huggingface',
-    label: 'Hugging Face (free tier)',
+    shortLabel: 'Hugging Face',
+    label: 'Hugging Face — free tier',
     kind: 'key',
     envVar: 'HF_API_KEY',
     defaultModel: 'meta-llama/Llama-3.3-70B-Instruct',
   },
   {
     id: 'vercel',
-    label: 'Vercel AI Gateway',
+    shortLabel: 'Vercel AI Gateway',
+    label: 'Vercel AI Gateway — paid',
     kind: 'key',
     envVar: 'VERCEL_AI_GATEWAY_KEY',
     defaultModel: 'anthropic/claude-opus-4',
   },
-  { id: 'custom', label: 'Custom OpenAI-compatible endpoint', kind: 'custom', envVar: 'CUSTOM_API_KEY' },
-  { id: 'ollama', label: 'Local (Ollama, no internet)', kind: 'local', defaultModel: 'llama3.1:8b' },
+  {
+    id: 'nous',
+    shortLabel: 'Nous Portal',
+    label: 'Nous Portal — subscription',
+    kind: 'subscription',
+    defaultModel: 'hermes-3-llama-3.1-405b',
+  },
+  {
+    id: 'custom',
+    shortLabel: 'custom endpoint',
+    label: 'Custom OpenAI-compatible endpoint',
+    kind: 'custom',
+    envVar: 'CUSTOM_API_KEY',
+  },
 ];
 
 export interface SetupAnswers {
@@ -220,8 +305,27 @@ export interface SetupOptions {
   validator?: typeof validateProviderKey;
 }
 
+/**
+ * Phase 30.2.1 — wizard exit states.
+ *
+ * - `'configured'` — provider+key validated (or saved-without-validation
+ *   per recovery option [3]); boot proceeds normally.
+ * - `'skipped'`    — user picked recovery option [4] "explore mode" or
+ *   cancelled (Ctrl+C). Boot continues into REPL with a stub adapter
+ *   so slash commands still work but chat shows a friendly "no provider
+ *   configured" message instead of crashing.
+ * - `'exited'`    — user picked recovery option [5] "exit". The CLI
+ *   exits cleanly without entering the REPL.
+ */
+export type SetupStatus = 'configured' | 'skipped' | 'exited';
+
 export interface SetupResult {
-  /** True if the wizard ran (and saved). False if skipped. */
+  /**
+   * Phase 30.2.1 status, replaces the boolean `ran`. Boot logic switches
+   * on this. `ran` is kept for back-compat with older callers.
+   */
+  status: SetupStatus;
+  /** Back-compat: true when `status === 'configured'`. */
   ran: boolean;
   /** Reason wizard was skipped (only set when `ran=false`). */
   skipReason?: string;
@@ -425,6 +529,89 @@ export async function probeOllama(opts: { fetchImpl: typeof fetch; timeoutMs?: n
 }
 
 /**
+ * Phase 30.2.1 — open `url` in the user's default browser. Used by the
+ * recovery menu's "Get a key from <provider URL>" branch. Best-effort
+ * — failure is non-fatal (we still print the URL so the user can copy
+ * it manually).
+ */
+async function openUrlInBrowser(url: string, display: Display): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { exec } = require('node:child_process') as typeof import('node:child_process');
+  const platform = process.platform;
+  let cmd: string;
+  if (platform === 'win32') {
+    // `start ""` swallows the URL into the title arg; double-empty-arg
+    // form keeps cmd.exe happy and leaves the URL as the actual target.
+    cmd = `cmd /c start "" "${url}"`;
+  } else if (platform === 'darwin') {
+    cmd = `open "${url}"`;
+  } else {
+    cmd = `xdg-open "${url}"`;
+  }
+  await new Promise<void>((resolve) => {
+    exec(cmd, (err: Error | null) => {
+      if (err) {
+        display.write(
+          `${kleur.dim(`(could not auto-open browser — visit ${url} manually)`)}\n`,
+        );
+      }
+      resolve();
+    });
+  });
+}
+
+/**
+ * Phase 30.2.1 — recovery menu shown after 3 failed key-validation
+ * attempts. Replaces the prior dead-end throw with five recoverable
+ * paths so a user with a fat-fingered key isn't stranded.
+ */
+type RecoveryChoice =
+  | { kind: 'try-different' }
+  | { kind: 'get-key'; url: string }
+  | { kind: 'save-anyway' }
+  | { kind: 'skip' }
+  | { kind: 'exit' };
+
+async function runRecoveryMenu(
+  provider: ProviderOption,
+  prompts: PromptIO,
+  display: Display,
+): Promise<RecoveryChoice> {
+  const choices: string[] = [
+    'Try a different provider',
+    provider.keyUrl
+      ? `Get a key from ${provider.keyUrl}`
+      : 'Get a key from the provider website (URL printed when picked)',
+    'Save without validation (writes config; key untested)',
+    'Skip — explore Aiden first (no chat, but / commands work)',
+    'Exit (try again later)',
+  ];
+  const idx = await prompts.choose(
+    'What would you like to do?',
+    choices,
+    /* default= */ 1,
+  );
+  switch (idx) {
+    case 1: return { kind: 'try-different' };
+    case 2: {
+      // Provider may not carry a keyUrl (legacy entries). Fall through
+      // to "try-different" so the user isn't stuck staring at nothing.
+      if (!provider.keyUrl) {
+        display.write(
+          `${kleur.dim(`(no key URL on file for ${provider.shortLabel}; pick a different provider.)`)}\n`,
+        );
+        return { kind: 'try-different' };
+      }
+      return { kind: 'get-key', url: provider.keyUrl };
+    }
+    case 3: return { kind: 'save-anyway' };
+    case 4: return { kind: 'skip' };
+    case 5: return { kind: 'exit' };
+    default: return { kind: 'exit' };
+  }
+}
+
+/**
  * Append (or overwrite) an entry in `.env`. Existing entries with the same
  * key are replaced. New entries are appended to the bottom. Keys are
  * uppercased automatically.
@@ -459,7 +646,14 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
   const fetchImpl = opts.fetchImpl ?? fetch;
 
   if (!opts.force && !(await isFreshInstall(paths))) {
-    return { ran: false, skipReason: 'config.yaml already exists; pass force=true to re-run' };
+    // Existing config — wizard wasn't needed. Treat as already-configured
+    // so the boot path proceeds to resolver (which will surface real
+    // credential issues with its own error contract).
+    return {
+      status: 'configured',
+      ran: false,
+      skipReason: 'config.yaml already exists; pass force=true to re-run',
+    };
   }
 
   await ensureAidenDirsExist(paths);
@@ -467,19 +661,42 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
   display.printBanner();
   display.write('\nWelcome — let\'s pick a provider.\n');
   display.write(
-    `${kleur.dim('(Press Enter to accept the recommended Together AI option — fastest path to a working REPL.)')}\n\n`,
+    `${kleur.dim('(Press Enter to accept Groq — free + fastest setup.)')}\n\n`,
   );
 
-  // Step 1: provider selection. Phase 22 Task 1: pre-select Together as
-  // the recommended default. Together's signup is fast, the free credit
-  // covers a few hundred turns, and Qwen3-235B has strong tool calling —
-  // optimises for time-to-first-tool-call.
-  const togetherDefaultIdx = PROVIDERS.findIndex((p) => p.id === 'together') + 1;
-  const providerIndex = await prompts.choose(
-    'Which provider would you like to use?',
-    PROVIDERS.map((p) => p.label),
-    togetherDefaultIdx > 0 ? togetherDefaultIdx : undefined,
-  );
+  // Phase 30.2.1 — Groq is the new recommended default for first-time
+  // users: free tier, fastest signup, and avoids the surprise charge
+  // path of paid providers. Together AI moved to position [8] paid.
+  const groqDefaultIdx = PROVIDERS.findIndex((p) => p.id === 'groq') + 1;
+
+  // outer: provider-pick loop. Recovery option [1] "Try a different
+  // provider" jumps back to this prompt without losing progress on
+  // global state (display, paths, ensureAidenDirsExist already ran).
+  // Try/catch wraps inquirer to convert Ctrl+C ("User force closed
+  // the prompt") into the same "skipped" exit state as recovery [4]
+  // — the user clearly didn't want to finish, but we still want them
+  // to land in REPL "explore mode" rather than crash.
+  // eslint-disable-next-line no-constant-condition
+  outer: while (true) {
+  let providerIndex: number;
+  try {
+    providerIndex = await prompts.choose(
+      'Which provider would you like to use?',
+      PROVIDERS.map((p) => p.label),
+      groqDefaultIdx > 0 ? groqDefaultIdx : undefined,
+    );
+  } catch (err) {
+    const msg = (err as Error)?.message ?? '';
+    if (/force closed|cancel/i.test(msg)) {
+      display.write('\nWizard cancelled — entering explore mode.\n');
+      return {
+        status: 'skipped',
+        ran: false,
+        skipReason: 'cancelled-at-provider-pick',
+      };
+    }
+    throw err;
+  }
   const provider = PROVIDERS[providerIndex - 1];
   if (!provider) throw new Error(`invalid provider selection: ${providerIndex}`);
 
@@ -501,12 +718,14 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
     );
 
     const proceed = await prompts.confirm(
-      `Continue with ${provider.label}?`,
+      `Continue with ${provider.shortLabel}?`,
       true,
     );
     if (!proceed) {
-      display.write('\nSkipped. Run `aiden setup` again to retry, or pick a different provider.\n');
-      return { ran: false, skipReason: 'oauth-skipped' };
+      // Phase 30.2.1: don't dead-end. Loop back to provider pick so
+      // the user can choose another option without re-launching aiden.
+      display.write('\nNo problem — pick another provider.\n');
+      continue outer;
     }
 
     let oauthProvider: OAuthProvider;
@@ -515,10 +734,11 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
     } catch (err) {
       display.write(
         display.error(
-          `Could not load OAuth plugin for ${provider.label}: ${(err as Error).message}`,
+          `Could not load OAuth plugin for ${provider.shortLabel}: ${(err as Error).message}`,
         ),
       );
-      return { ran: false, skipReason: 'oauth-plugin-missing' };
+      // Plugin missing — let the user pick another provider.
+      continue outer;
     }
 
     const ua = wizardUserAgent(prompts, display);
@@ -529,10 +749,12 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
     } catch (err) {
       display.write(
         display.error(
-          `${provider.label} sign-in failed: ${(err as Error).message}`,
+          `${provider.shortLabel} sign-in failed: ${(err as Error).message}`,
         ),
       );
-      return { ran: false, skipReason: 'oauth-failed' };
+      // OAuth failures are recoverable — loop back so the user can
+      // pick an API-key provider as a fallback.
+      continue outer;
     }
 
     // Pick a default model from the registry's known list; user can /model later.
@@ -560,6 +782,7 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
         `(would have saved tokens to ${path.join(paths.root, 'auth', `${provider.id}.json`)})\n`,
       );
       return {
+        status: 'configured',
         ran: false,
         skipReason: 'smoke-test',
         config,
@@ -572,7 +795,7 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
 
     // Confirmation surface — what's wired now.
     const expIso = new Date(tokens.expiresAtMs).toISOString();
-    display.write(`\n✓ ${provider.label} authed.\n`);
+    display.write(`\n✓ ${provider.shortLabel} authed.\n`);
     if (tokens.account) display.write(`  Account: ${tokens.account}\n`);
     if (oauthProvider.defaultModels?.length) {
       display.write(
@@ -590,14 +813,16 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
     );
     printPostWizardTutorial(display, AIDEN_VERSION);
 
-    return { ran: true, config, envFile: paths.envFile };
+    return { status: 'configured', ran: true, config, envFile: paths.envFile };
   }
 
-  // Step 2: model selection
+  // Step 2: model selection. Phase 30.2.1: subsequent prompts use
+  // `shortLabel` instead of the full picker `label` to drop the
+  // parenthetical description from the wall of text.
   let modelId = provider.defaultModel ?? '';
   if (provider.models && provider.models.length > 1) {
     const modelIndex = await prompts.choose(
-      `Pick a model for ${provider.label}`,
+      `Pick a model for ${provider.shortLabel}`,
       provider.models,
     );
     modelId = provider.models[modelIndex - 1];
@@ -620,14 +845,16 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
           'install from https://ollama.com, run `ollama serve`, then re-run `aiden setup`.',
         ),
       );
-      return { ran: false, skipReason: 'ollama-not-reachable' };
+      // Phase 30.2.1: Ollama unreachable is recoverable — loop back
+      // so the user can pick a different provider without restart.
+      continue outer;
     }
   } else if (provider.kind === 'custom') {
     baseUrl = await prompts.input('Base URL (e.g. https://api.example.com/v1)');
     apiKey = await prompts.input('API key', { mask: true });
   } else if (provider.kind === 'key' || provider.kind === 'subscription') {
     if (provider.envVar) {
-      apiKey = await prompts.input(`API key for ${provider.label}`, { mask: true });
+      apiKey = await prompts.input(`API key for ${provider.shortLabel}`, { mask: true });
     }
   }
 
@@ -644,11 +871,17 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
     const validate = opts.validator ?? validateProviderKey;
     const maxAttempts = 3;
     let attempt = 1;
+    let validated = false;
+    let skipValidationForSave = false;
 
-    // First attempt uses the key already collected. Subsequent attempts
-    // re-prompt for a fresh key (and baseUrl, for custom).
-    while (attempt <= maxAttempts) {
-      const spinner = display.startSpinner(`Validating ${provider.label} API key…`);
+    // Validation loop: at most 3 attempts before falling through to
+    // the recovery menu. First attempt uses the already-collected key;
+    // subsequent attempts re-prompt for a fresh key (and baseUrl, for
+    // custom). This loop labelled `validation` so the recovery flow
+    // can `continue validation` to retry with fresh attempts after
+    // option [2] "Get a key" opens the browser.
+    validation: while (attempt <= maxAttempts) {
+      const spinner = display.startSpinner(`Validating ${provider.shortLabel} API key…`);
       let result;
       try {
         result = await validate(provider.id, apiKey as string, baseUrl, fetchImpl);
@@ -664,8 +897,9 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
             )}\n`,
           );
         } else {
-          display.write(`${kleur.green(`✓ ${provider.label} API key validated`)}\n`);
+          display.write(`${kleur.green(`✓ ${provider.shortLabel} API key validated`)}\n`);
         }
+        validated = true;
         break;
       }
 
@@ -673,27 +907,85 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
       display.write(
         display.error(
           `Validation failed: ${result.reason ?? 'unknown error'}`,
-          'Re-enter the key, or press Ctrl+C to exit.',
+          attempt < maxAttempts
+            ? 'Re-enter the key, or press Ctrl+C to exit.'
+            : 'Three attempts used.',
         ),
       );
 
       if (attempt >= maxAttempts) {
-        throw new Error(
-          'Could not validate key after 3 attempts. Run `aiden setup --skip-validation` to bypass.',
-        );
+        // Phase 30.2.1 — recovery menu replaces the prior dead-end
+        // `throw new Error(...)`. Five paths for the user to pick from:
+        //   [1] try-different    → loop back to provider picker
+        //   [2] get-key (URL)    → open browser, fresh 3 attempts
+        //   [3] save-anyway      → write config without validation
+        //   [4] skip             → boot REPL in explore mode
+        //   [5] exit             → clean exit
+        const choice = await runRecoveryMenu(provider, prompts, display);
+        if (choice.kind === 'try-different') {
+          continue outer;
+        }
+        if (choice.kind === 'get-key') {
+          display.write(`\nOpening ${choice.url} in your browser…\n`);
+          await openUrlInBrowser(choice.url, display);
+          display.write(
+            `${kleur.dim('Paste the new key when prompted. You have 3 fresh attempts.')}\n`,
+          );
+          // Reset the attempt counter and re-prompt for a fresh key.
+          attempt = 1;
+          if (provider.kind === 'custom') {
+            baseUrl = await prompts.input(
+              'Base URL (e.g. https://api.example.com/v1)',
+              { default: baseUrl },
+            );
+            apiKey = await prompts.input('API key', { mask: true });
+          } else {
+            apiKey = await prompts.input(
+              `API key for ${provider.shortLabel}`,
+              { mask: true },
+            );
+          }
+          continue validation;
+        }
+        if (choice.kind === 'save-anyway') {
+          display.write(
+            `${kleur.yellow('Saving without validation. The key will be tested on your first chat.')}\n`,
+          );
+          skipValidationForSave = true;
+          break validation;
+        }
+        if (choice.kind === 'skip') {
+          display.write('\nEntering explore mode — chat is disabled but slash commands work.\n');
+          return {
+            status: 'skipped',
+            ran: false,
+            skipReason: 'recovery-explore-mode',
+          };
+        }
+        // choice.kind === 'exit'
+        display.write('\nExited. Run `aiden setup` to try again.\n');
+        return { status: 'exited', ran: false, skipReason: 'recovery-exited' };
       }
 
-      // Re-prompt for credentials.
+      // Re-prompt for credentials (only reached when attempt < maxAttempts).
       if (provider.kind === 'custom') {
         baseUrl = await prompts.input('Base URL (e.g. https://api.example.com/v1)', {
           default: baseUrl,
         });
         apiKey = await prompts.input('API key', { mask: true });
       } else {
-        apiKey = await prompts.input(`API key for ${provider.label}`, { mask: true });
+        apiKey = await prompts.input(`API key for ${provider.shortLabel}`, { mask: true });
       }
       attempt += 1;
     }
+
+    // Tag the outer scope so the post-validation save path knows
+    // whether to print the "untested" warning. (validated is read
+    // by the smoke-test branch below; skipValidationForSave is
+    // currently unused outside this block but documented for
+    // post-save UX hooks.)
+    void validated;
+    void skipValidationForSave;
   }
 
   // Step 4: terminal backend (basic — keeps wizard in scope for 14a).
@@ -727,7 +1019,13 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
       display.write(`(would have written CUSTOM_BASE_URL=${baseUrl} to ${paths.envFile})\n`);
     }
     display.write('(no files written because --smoke-test was passed)\n');
-    return { ran: false, skipReason: 'smoke-test', config, envFile: paths.envFile };
+    return {
+      status: 'configured',
+      ran: false,
+      skipReason: 'smoke-test',
+      config,
+      envFile: paths.envFile,
+    };
   }
 
   const cm = new ConfigManager(paths);
@@ -742,11 +1040,14 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
 
   // Step 6: tutorial
   display.write(
-    `\n${kleur.green(`✓ ${provider.label}`)} configured with model ${kleur.cyan(modelId)}.\n`,
+    `\n${kleur.green(`✓ ${provider.shortLabel}`)} configured with model ${kleur.cyan(modelId)}.\n`,
   );
   printPostWizardTutorial(display, AIDEN_VERSION);
 
-  return { ran: true, config, envFile: paths.envFile };
+  return { status: 'configured', ran: true, config, envFile: paths.envFile };
+  } // end of outer: while (true) — every path inside either continues,
+    // returns, or breaks. Reaching this `}` is impossible (guarded by
+    // the no-constant-condition eslint comment above the outer label).
 }
 
 // ---------------------------------------------------------------------------
@@ -759,10 +1060,11 @@ if (require.main === module) {
   const skipValidation = argv.includes('--skip-validation');
   runSetupWizard({ smokeTest, force, skipValidation })
     .then((result) => {
-      if (!result.ran && result.skipReason && result.skipReason !== 'smoke-test') {
-        // Skipped for a reason that's already been displayed; non-zero so callers can detect.
-        process.exit(0);
-      }
+      // Phase 30.2.1: status is the new authoritative signal. Direct
+      // CLI invocation always exits 0 — the wizard already printed
+      // its own outcome lines, and a non-zero exit confuses shell
+      // wrappers that pipe the wizard's output into other tools.
+      void result.status;
       process.exit(0);
     })
     .catch((err) => {

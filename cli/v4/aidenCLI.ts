@@ -89,6 +89,10 @@ import {
   restoreBundledSkillsIfNeeded,
   syncBundledSkillsIfStale,
 } from '../../core/v4/skillBundledRestore';
+import {
+  detectAvailableProviders,
+  summarizeDetection,
+} from '../../core/v4/firstRun/providerDetection';
 import { createFileLogger } from '../../core/v4/aidenLogger';
 import {
   PluginLoader,
@@ -403,9 +407,79 @@ export async function buildAgentRuntime(
   const config = new ConfigManager(paths);
   await config.load();
 
-  if (await isFreshInstall(paths)) {
-    process.stdout.write('Aiden is not configured yet. Running setup wizard…\n');
-    await runSetupWizard({ paths });
+  // Phase 30.2 — fresh-user UX. Detection extends the old
+  // `isFreshInstall`-only gate so we cover three new failure modes:
+  //   1. fresh user with no env / no OAuth / no config → wizard fires
+  //      (was working under the old gate; still does).
+  //   2. user with config.yaml pointing at chatgpt-plus but a stale /
+  //      missing OAuth token file → wizard fires (was NOT under old
+  //      code — it saw config.yaml present and proceeded into a
+  //      broken resolve, which surfaced as a confusing rate-limit
+  //      error on the user's first chat).
+  //   3. user with no config but Ollama running OR an env API key
+  //      → wizard fires anyway. ConfigManager's DEFAULT_CONFIG points
+  //      at `anthropic / claude-opus-4-7`, which doesn't match the
+  //      detected env / Ollama, so skipping the wizard would surface
+  //      the same confusing "missing ANTHROPIC_API_KEY" error.
+  //   4. moat-boot test fixtures that stub `providers.fake.apiKey`
+  //      inline in config.yaml count as configured — `isFreshInstall`
+  //      already returns false for them so `wizardNeeded` stays false.
+  const detection = await detectAvailableProviders({ paths });
+  const configuredProviderBroken =
+    !!detection.configProvider &&
+    !detection.configuredProviderHasCredentials;
+  const wizardNeeded =
+    !detection.hasAnyProvider ||
+    configuredProviderBroken ||
+    (await isFreshInstall(paths));
+
+  // Phase 30.2.1: when the wizard returns 'skipped' (explore mode) we
+  // boot the REPL with a NullAdapter instead of trying to resolve a
+  // real provider. Flagged here, set inside the wizard block, and
+  // consumed when building the adapter.
+  let exploreMode = false;
+
+  if (wizardNeeded) {
+    if (!detection.hasAnyProvider) {
+      // Truly empty: no env, no OAuth, no Ollama, no inline config.
+      process.stdout.write(`\n${summarizeDetection(detection)}\n`);
+    } else if (configuredProviderBroken) {
+      // Config points at a provider we can't credential-resolve.
+      process.stdout.write(
+        `\nConfigured provider '${detection.configProvider}' has no usable credentials ` +
+          `at ${path.join(paths.root, 'auth', `${detection.configProvider}.json`)}.\n`,
+      );
+    } else {
+      // Detected something (env / oauth / ollama) but config.yaml is
+      // missing or empty — DEFAULT_CONFIG would route to anthropic and
+      // the resolver would fail. Surface the detection so the user
+      // sees what we found, then walk them through proper setup.
+      process.stdout.write(`\n${summarizeDetection(detection)}\n`);
+      process.stdout.write(
+        'config.yaml is empty — let\'s pick a provider that matches.\n',
+      );
+    }
+    process.stdout.write('Launching setup wizard…\n\n');
+
+    const result = await runSetupWizard({ paths });
+
+    // Phase 30.2.1: three exit states.
+    if (result.status === 'exited') {
+      // Recovery option [5] — clean exit, no REPL.
+      process.exit(0);
+    }
+    if (result.status === 'skipped') {
+      // Recovery option [4] "explore mode" OR Ctrl+C cancellation.
+      // Boot continues into the REPL with a NullAdapter; chat is
+      // intercepted by ChatSession, slash commands work normally.
+      // Flagged here and consumed below where the adapter is built.
+      exploreMode = true;
+    }
+
+    // 'configured' (or 'skipped' — we still want the env/.env reload
+    // for slash commands like /providers that read fresh state) →
+    // re-load both so the resolver sees what the wizard wrote.
+    loadAidenEnvFile(paths.envFile);
     await config.load();
   }
 
@@ -440,22 +514,34 @@ export async function buildAgentRuntime(
   const credentialResolver = new CredentialResolver(paths.authJson);
   const resolver = new RuntimeResolver(credentialResolver);
   let adapter;
-  try {
-    adapter = await resolver.resolve({ providerId, modelId, config, paths });
-  } catch (err) {
-    display.printError(
-      `Could not resolve provider '${providerId}' / model '${modelId}': ${(err as Error).message}`,
-      'Run `aiden model` to pick a valid provider, or `aiden doctor`.',
-    );
-    process.exit(1);
+  if (exploreMode) {
+    // Phase 30.2.1 — wizard skipped. Use a NullAdapter so AidenAgent
+    // construction succeeds; ChatSession will intercept chat attempts
+    // BEFORE calling the adapter and surface the friendly message.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { NullAdapter } = require('../../providers/v4/nullAdapter');
+    adapter = new NullAdapter();
+  } else {
+    try {
+      adapter = await resolver.resolve({ providerId, modelId, config, paths });
+    } catch (err) {
+      display.printError(
+        `Could not resolve provider '${providerId}' / model '${modelId}': ${(err as Error).message}`,
+        'Run `aiden model` to pick a valid provider, or `aiden doctor`.',
+      );
+      process.exit(1);
+    }
   }
 
   // Phase 16b.1: wrap chat_completions providers in a FallbackAdapter so
   // 429s on Groq slot 1 transparently retry Groq slot 2/3 and Together.
   // Only activates when there's at least one *additional* slot configured
   // beyond the primary — otherwise the wrapper would just rethrow.
+  // Phase 30.2.1: skip in explore mode — wrapping a NullAdapter in
+  // FallbackAdapter would just defer the friendly error one layer.
   let fallbackAdapter: FallbackAdapter | null = null;
   if (
+    !exploreMode &&
     adapter.apiMode === 'chat_completions' &&
     (providerId === 'groq' || providerId === 'together')
   ) {
@@ -924,6 +1010,7 @@ export async function buildAgentRuntime(
     fallbackAdapter,
     personalityManager,
     pluginLoader,
+    exploreMode,
   };
 }
 
@@ -971,6 +1058,13 @@ export interface AgentRuntime {
   personalityManager: PersonalityManager;
   /** Phase 17 Task 5: live plugin loader for /plugins commands + onTeardown on shutdown. */
   pluginLoader: PluginLoader;
+  /**
+   * Phase 30.2.1 — true when the wizard returned 'skipped' (recovery
+   * option [4] or Ctrl+C). The REPL boots with a NullAdapter so slash
+   * commands work; ChatSession intercepts chat attempts and prints a
+   * friendly "no provider configured" message instead of crashing.
+   */
+  exploreMode: boolean;
 }
 
 async function runInteractiveChat(cliOpts: any, opts: MainOptions): Promise<void> {
@@ -998,6 +1092,9 @@ async function runInteractiveChat(cliOpts: any, opts: MainOptions): Promise<void
     paths: runtime.paths,
     personalityManager: runtime.personalityManager,
     pluginLoader: runtime.pluginLoader,
+    // Phase 30.2.1 — boot card renders "model not configured" and
+    // chat attempts get the friendly NotConfiguredError message.
+    unconfigured: runtime.exploreMode,
   };
 
   if (cliOpts.tui) {

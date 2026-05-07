@@ -350,6 +350,14 @@ export class Display {
     mode: string;
     model: string;
     memoryActive: boolean;
+    /**
+     * Phase 30.2 (v4.0.2) — when explicitly false, the model pill renders
+     * "not configured" instead of the supplied model id, and its dot fades
+     * to muted. Defaults to true (no behavioural change for callers that
+     * don't pass it). Used by the post-wizard / fallback paths so a
+     * stale model name from config.yaml cannot mislead a fresh user.
+     */
+    providerOk?: boolean;
   }): string {
     const sk = this.skin;
     const dot = (on: boolean): string => sk.applyColors('●', on ? 'success' : 'muted');
@@ -357,12 +365,14 @@ export class Display {
     const val = (s: string): string => sk.applyColors(s, 'agent');
     const pill = (on: boolean, label: string, value: string): string =>
       `${dot(on)} ${lab(label)} ${val(value)}`;
+    const providerOk = args.providerOk !== false;
+    const modelValue = providerOk ? args.model : 'not configured';
     return (
       '  ' +
       [
         pill(args.coreOnline, 'core', args.coreOnline ? 'online' : 'starting'),
         pill(true, 'mode', args.mode),
-        pill(true, 'model', args.model),
+        pill(providerOk, 'model', modelValue),
         pill(args.memoryActive, 'memory', args.memoryActive ? 'active' : 'off'),
       ].join('    ')
     );
