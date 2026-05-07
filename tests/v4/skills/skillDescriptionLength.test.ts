@@ -17,8 +17,7 @@ import path from 'node:path';
  *   - skill.json `description` field — kept in sync for any consumer
  *     that prefers structured metadata.
  *
- * To bump the cap, justify the change here AND in the audit doc at
- * `_internal/hermes-ux-patterns.md` §8C.a.
+ * To bump the cap, justify the change here.
  */
 const MAX_DESCRIPTION_CHARS = 80;
 const SKILLS_DIR = path.resolve(__dirname, '..', '..', '..', 'skills');

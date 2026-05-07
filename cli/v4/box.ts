@@ -10,9 +10,8 @@
  * Shared between the REPL boot card (chatSession.ts), the
  * setup-complete summary (setupWizard.ts), the /doctor health box
  * (doctor.ts), and the approval prompt box (callbacks.ts). Per the
- * Hermes-pattern audit (_internal/hermes-ux-patterns.md §4) Aiden
- * uses the rounded set (╭╮╰╯) — Hermes uses square corners but
- * rounded reads softer at launch-card scale.
+ * Aiden uses the rounded set (╭╮╰╯) for box framing — rounded
+ * reads softer at launch-card scale than square corners.
  *
  * Width counts the inner cell only (between the verticals). Content
  * is padded to width-1 so a single leading space gives the box a

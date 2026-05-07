@@ -3,13 +3,14 @@ import { describe, it, expect } from 'vitest';
 import { extractInlineToolCalls } from '../../../providers/v4/chatCompletionsAdapter';
 
 /**
- * Phase 21 #4 — inline `<tool_call>` extraction (Hermes/Qwen format).
+ * Phase 21 #4 — inline `<tool_call>` extraction (Qwen-family format).
  *
  * The `<tool_call>...</tool_call>` wrapping is a public format used by
- * Nous Hermes / Qwen open-source models. These tests pin parser
- * behaviour to that format spec — closed tags, truncated tags, malformed
- * JSON, multiple calls in one stream — so a model regression fails
- * loudly here rather than silently leaking tool JSON to the user.
+ * Qwen and several other open-source instruction-tuned models. These
+ * tests pin parser behaviour to that format spec — closed tags,
+ * truncated tags, malformed JSON, multiple calls in one stream — so
+ * a model regression fails loudly here rather than silently leaking
+ * tool JSON to the user.
  */
 describe('Phase 21 #4 — extractInlineToolCalls', () => {
   it('1. closed <tool_call> tag → synthesizes ToolCallRequest, strips from content', () => {

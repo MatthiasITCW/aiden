@@ -14,10 +14,8 @@
 # Secret required: NPM_TOKEN — npm automation token with publish access
 # to `aiden-runtime`. Configure under Settings → Secrets → Actions.
 #
-# Hermes reference: hermes-agent has no npm/PyPI publish workflow (it
-# distributes via Docker + Nix). This is an Aiden-specific surface — see
-# docs/sprint/hermes-license-pipeline-audit.md § "Versioning + registry
-# publish".
+# This workflow is Aiden-specific — `aiden-runtime` ships via npm
+# while the desktop app ships via electron-builder + GitHub releases.
 
 name: publish
 

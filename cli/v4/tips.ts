@@ -7,8 +7,7 @@
 /**
  * cli/v4/tips.ts — Aiden v4.0.0 (Phase 22)
  *
- * Rotating tip pool surfaced once per REPL boot. Hermes-pattern port —
- * see docs/sprint/_internal/hermes-ux-patterns.md §1.
+ * Rotating tip pool surfaced once per REPL boot.
  *
  * Each entry is a single short sentence covering one feature. The pool is
  * intentionally small at v4 launch (~10) so every line points at something

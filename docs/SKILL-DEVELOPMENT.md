@@ -50,7 +50,7 @@ Result: what the user expects to see
   "license": "Apache-2.0",
   "tools": ["web_search", "notify"],
   "trigger_phrases": ["phrase that invokes this skill"],
-  "compatible_agents": ["aiden", "hermes", "openclaw"],
+  "compatible_agents": ["aiden", "claude-code"],
   "tags": ["category"]
 }
 ```

@@ -259,7 +259,7 @@ export class Display {
   }
 
   /**
-   * Phase 26.2.3 — single-line assistant header in the Hermes
+   * Phase 26.2.3 — single-line assistant header in the
    * `┃ Aiden` style. `┃` (U+2503 heavy vertical) and `Aiden` are
    * both brand-orange. The thin rule that previously sat under the
    * label is gone — the per-turn separator (printed BEFORE the user
@@ -614,7 +614,7 @@ export class Display {
     const render = (): void => {
       if (!isTty || stopped) return;
       // Phase 23.5: spinner glyph in soft cyan (muted), not brand orange.
-      // Quiet color, not loud — Hermes principle 6.
+      // Quiet color, not loud.
       const glyph = skin.applyColors(frames[frame % frames.length], 'muted');
       this.out.write(`\r${glyph} ${current}   `);
       frame += 1;
@@ -644,7 +644,7 @@ export class Display {
     };
   }
 
-  // ── Phase 23.5 — Hermes-style tool event row ──────────────────────────
+  // ── Phase 23.5 — tool event row ───────────────────────────────────────
   // One line per tool call: a "·" gutter, the keyword `tool`, the
   // tool name (soft cyan, padded), a brief truncated arg preview, and
   // a single right-side bracket cluster carrying state. Bracket

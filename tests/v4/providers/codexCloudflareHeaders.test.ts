@@ -13,7 +13,7 @@ import {
  * Without these headers the Codex backend returns
  *   400 "model not supported when using Codex with a ChatGPT account"
  * regardless of slug or account entitlement. These tests pin the
- * adapter to the Hermes shape so a future "cleanup" doesn't strip them.
+ * adapter to the Codex-CLI header shape so a future "cleanup" doesn't strip them.
  */
 
 // Build a minimal JWT (header.payload.signature) with a chatgpt_account_id

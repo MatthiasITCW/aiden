@@ -16,22 +16,87 @@ Local-first · Self-healing routing · Browser & terminal control · Persistent 
 ```
 
 <p align="center">
-  <a href="https://github.com/taracodlabs/aiden-releases/releases/latest"><img src="https://img.shields.io/github/v/release/taracodlabs/aiden-releases?color=f97316&label=version" alt="Latest version" /></a>
-  <a href="https://github.com/taracodlabs/aiden-releases/releases"><img src="https://img.shields.io/github/downloads/taracodlabs/aiden-releases/total?color=f97316&label=downloads" alt="Downloads" /></a>
-  <a href="https://discord.gg/gMZ3hUnQTm"><img src="https://img.shields.io/badge/chat-discord-7289da?logo=discord&logoColor=white" alt="Discord" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-orange" alt="License: AGPL-3.0" /></a>
-  <a href="https://github.com/taracodlabs/aiden/stargazers"><img src="https://img.shields.io/github/stars/taracodlabs/aiden?style=flat&color=f9d71c" alt="Stars" /></a>
-  <a href="https://www.npmjs.com/package/aiden-runtime"><img src="https://img.shields.io/npm/v/aiden-runtime?color=f97316&label=npm" alt="npm" /></a>
+  <a href="https://github.com/taracodlabs/aiden-releases/releases/latest"><img src="https://img.shields.io/github/v/release/taracodlabs/aiden-releases?color=f97316&label=version&style=for-the-badge" alt="Latest version" /></a>
+  <a href="https://github.com/taracodlabs/aiden-releases/releases"><img src="https://img.shields.io/github/downloads/taracodlabs/aiden-releases/total?color=f97316&label=downloads&style=for-the-badge" alt="Downloads" /></a>
+  <a href="https://discord.gg/gMZ3hUnQTm"><img src="https://img.shields.io/badge/chat-discord-7289da?logo=discord&logoColor=white&style=for-the-badge" alt="Discord" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-orange?style=for-the-badge" alt="License: AGPL-3.0" /></a>
+  <a href="https://github.com/taracodlabs/aiden/stargazers"><img src="https://img.shields.io/github/stars/taracodlabs/aiden?style=for-the-badge&color=f9d71c" alt="Stars" /></a>
+  <a href="https://www.npmjs.com/package/aiden-runtime"><img src="https://img.shields.io/npm/v/aiden-runtime?color=f97316&label=npm&style=for-the-badge" alt="npm" /></a>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Node.js-18+-43853d?logo=node.js&logoColor=white" alt="Node.js 18+" />
-  <img src="https://img.shields.io/badge/TypeScript-5.9-3178c6?logo=typescript&logoColor=white" alt="TypeScript 5.9" />
-  <img src="https://img.shields.io/badge/Electron-41-9feaf9?logo=electron&logoColor=black" alt="Electron 41" />
-  <img src="https://img.shields.io/badge/Next.js-app%20router-000000?logo=next.js&logoColor=white" alt="Next.js" />
-  <img src="https://img.shields.io/badge/Playwright-1.58-2ea44f?logo=playwright&logoColor=white" alt="Playwright" />
-  <img src="https://img.shields.io/badge/Ollama-local-000000" alt="Ollama" />
-  <img src="https://img.shields.io/badge/MCP-1.27-7c3aed" alt="Model Context Protocol" />
+  <img src="https://img.shields.io/badge/TypeScript-5.9-3178c6?logo=typescript&logoColor=white&style=for-the-badge" alt="TypeScript 5.9" />
+  <img src="https://img.shields.io/badge/Node.js-18+-43853d?logo=node.js&logoColor=white&style=for-the-badge" alt="Node.js 18+" />
+  <img src="https://img.shields.io/badge/JavaScript-ES2022-f7df1e?logo=javascript&logoColor=black&style=for-the-badge" alt="JavaScript ES2022" />
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Electron-41-47848f?logo=electron&logoColor=white&style=for-the-badge" alt="Electron 41" />
+  <img src="https://img.shields.io/badge/Next.js-app%20router-000000?logo=next.js&logoColor=white&style=for-the-badge" alt="Next.js" />
+  <img src="https://img.shields.io/badge/React-18-61dafb?logo=react&logoColor=black&style=for-the-badge" alt="React 18" />
+  <img src="https://img.shields.io/badge/Tailwind%20CSS-06b6d4?logo=tailwind-css&logoColor=white&style=for-the-badge" alt="Tailwind CSS" />
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Anthropic-API-e8a061?logo=anthropic&logoColor=white&style=for-the-badge" alt="Anthropic" />
+  <img src="https://img.shields.io/badge/OpenAI-SDK-412991?logo=openai&logoColor=white&style=for-the-badge" alt="OpenAI" />
+  <img src="https://img.shields.io/badge/Ollama-local-000000?logo=ollama&logoColor=white&style=for-the-badge" alt="Ollama" />
+  <img src="https://img.shields.io/badge/MCP-1.27-7c3aed?style=for-the-badge" alt="Model Context Protocol" />
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Playwright-1.58-2ea44f?logo=playwright&logoColor=white&style=for-the-badge" alt="Playwright" />
+  <img src="https://img.shields.io/badge/CDP-Chrome-4285f4?logo=googlechrome&logoColor=white&style=for-the-badge" alt="Chrome DevTools Protocol" />
+  <img src="https://img.shields.io/badge/Puppeteer-40b5a4?logo=puppeteer&logoColor=white&style=for-the-badge" alt="Puppeteer" />
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/SQLite-003b57?logo=sqlite&logoColor=white&style=for-the-badge" alt="SQLite" />
+  <img src="https://img.shields.io/badge/better--sqlite3-12-003b57?style=for-the-badge" alt="better-sqlite3" />
+  <img src="https://img.shields.io/badge/sql.js-WASM-003b57?style=for-the-badge" alt="sql.js" />
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Vitest-4-6e9f18?logo=vitest&logoColor=white&style=for-the-badge" alt="Vitest 4" />
+  <img src="https://img.shields.io/badge/esbuild-bundler-ffcf00?logo=esbuild&logoColor=black&style=for-the-badge" alt="esbuild" />
+  <img src="https://img.shields.io/badge/electron--builder-NSIS-47848f?style=for-the-badge" alt="electron-builder" />
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Discord.js-bot-5865f2?logo=discord&logoColor=white&style=for-the-badge" alt="Discord.js" />
+  <img src="https://img.shields.io/badge/Slack-SDK-4a154b?logo=slack&logoColor=white&style=for-the-badge" alt="Slack SDK" />
+  <img src="https://img.shields.io/badge/Twilio-SMS-f22f46?logo=twilio&logoColor=white&style=for-the-badge" alt="Twilio" />
+  <img src="https://img.shields.io/badge/IMAP%20%2F%20SMTP-email-0078d4?logo=maildotru&logoColor=white&style=for-the-badge" alt="IMAP / SMTP" />
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Croner-cron-f97316?style=for-the-badge" alt="Croner" />
+  <img src="https://img.shields.io/badge/figlet-ASCII-808080?style=for-the-badge" alt="figlet" />
+  <img src="https://img.shields.io/badge/chalk-color-ff8c00?style=for-the-badge" alt="chalk" />
+  <img src="https://img.shields.io/badge/ora-spinner-00bcd4?style=for-the-badge" alt="ora" />
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Cloudflare-Workers-f38020?logo=cloudflare&logoColor=white&style=for-the-badge" alt="Cloudflare Workers" />
+  <img src="https://img.shields.io/badge/GitHub-Actions-2088ff?logo=githubactions&logoColor=white&style=for-the-badge" alt="GitHub Actions" />
+  <img src="https://img.shields.io/badge/npm-registry-cb3837?logo=npm&logoColor=white&style=for-the-badge" alt="npm" />
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Windows-10%2F11-0078d4?logo=windows&logoColor=white&style=for-the-badge" alt="Windows 10/11" />
+  <img src="https://img.shields.io/badge/Linux-AppImage%20%2F%20deb-fcc624?logo=linux&logoColor=black&style=for-the-badge" alt="Linux" />
+  <img src="https://img.shields.io/badge/macOS-API%20mode-000000?logo=apple&logoColor=white&style=for-the-badge" alt="macOS" />
+  <img src="https://img.shields.io/badge/WSL-2-4a90d9?logo=ubuntu&logoColor=white&style=for-the-badge" alt="WSL 2" />
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/providers-19-f97316?style=for-the-badge" alt="19 providers" />
+  <img src="https://img.shields.io/badge/skills-68-43853d?style=for-the-badge" alt="68 skills" />
+  <img src="https://img.shields.io/badge/tools-42-blueviolet?style=for-the-badge" alt="42 tools" />
+  <img src="https://img.shields.io/badge/channels-8-5865f2?style=for-the-badge" alt="8 channels" />
+  <img src="https://img.shields.io/badge/offline-Ollama-22c55e?style=for-the-badge" alt="offline" />
+  <img src="https://img.shields.io/badge/OAuth-Claude%20Pro%20%2B%20ChatGPT%20Plus-9333ea?style=for-the-badge" alt="OAuth subscriptions" />
+  <img src="https://img.shields.io/badge/local--first-yes-00aaaa?style=for-the-badge" alt="local-first" />
 </p>
 
 <p align="center">
@@ -48,17 +113,52 @@ Local-first · Self-healing routing · Browser & terminal control · Persistent 
 
 ---
 
+## Support Aiden
+
+Solo-built, AGPL-3.0. If Aiden saves you time, consider sponsoring development.
+
+[Sponsor →](https://razorpay.me/@whitelotus9625)
+
+Funds go to ongoing development, infrastructure costs, and contributor bounties.
+
+---
+
 ## Why Aiden
 
 Most AI agents answer questions. Aiden runs work end-to-end on your machine.
 
-- **Local-first** — your conversations and data stay on your machine. No telemetry. No cloud account required (Ollama supports fully offline).
-- **Real desktop control** — Playwright browser automation, screen capture + vision loop, file ops, shell execution. Not a chatbot wrapped in a sandbox.
-- **Self-healing provider routing** — primary provider rate-limited or down? The 6-slot fallback chain (`together → groq × 4`) takes over in under a second, no user intervention.
-- **OAuth subscriptions** — sign in with your Claude Pro or ChatGPT Plus account; queries route to your subscription quota instead of API credits.
-- **Persistent memory** — `MEMORY.md`, `USER.md`, `SOUL.md`, plus semantic recall and a `LESSONS.md` failure log that grows every session.
-- **Honest failures** — every tool error names the tool, provider, retry count, and next step. No silent swallowing.
+- **Runs on your machine** — local-first, no telemetry, no cloud account required
+- **Controls your desktop** — vision loop, browser, terminal, files. Not a chatbot wrapped in a sandbox.
+- **Automates any browser** — 10 Playwright-driven tools (navigate, click, type, fill, scroll, extract, screenshot, get-url, close, captcha-check)
+- **Self-healing provider routing** — 6-slot fallback chain (`together → groq × 4`) advances slots in under a second on rate-limit
+- **OAuth subscription routing** — sign in with Claude Pro or ChatGPT Plus; queries route to your subscription quota, not pay-as-you-go
+- **Persistent memory** — `MEMORY.md`, `USER.md`, `SOUL.md`, plus semantic recall and a `LESSONS.md` failure log that grows every session
+- **Lives where you do** — identity files re-read every turn; edit `USER.md` mid-conversation and the change lands within one reply
+- **One command to start** — `npx aiden-runtime` installs, configures, and runs everything
+- **Honest failures** — every tool error names the tool, provider, retry count, fallback chain, error, and next step. No silent swallowing.
+- **Plugin extension** — drop a plugin into `<aiden-home>/plugins/` and call `ctx.commandRegistry.register()` to add slash commands without touching core
 - **Open source** — AGPL-3.0 core, Apache-2.0 skills. Read every line, modify anything, contribute back.
+
+Aiden is a local-first AI operating system. It runs entirely on your machine — no cloud account required, no telemetry, no data leaving your hardware unless you configure a cloud provider. It ships with a signed Windows installer, Linux AppImage and .deb, and runs in headless API mode on macOS. Features: 68 bundled skills, 42 built-in tools across 11 categories, multi-layer memory architecture, self-healing provider routing across 19 providers, the ability to control your screen, browse the web, run code, send emails and messages, manage files, and hold a full conversation — offline via Ollama.
+
+---
+
+## Disclaimer
+
+**Aiden is a hobby project** built solo by one person. It is provided **"as-is" without warranty of any kind**, express or implied.
+
+⚠️ **Important risks to understand before installing:**
+
+- **Aiden controls your computer.** It can run shell commands, edit or delete files, automate your browser, capture screenshots, and send messages on your behalf. Always review what it's doing, especially when running in `/yolo` (no-approval) mode.
+- **Use API keys responsibly.** You provide your own provider keys. You pay for any usage on those keys. Aiden has built-in budget caps but you should set spending limits with your provider too.
+- **Back up important data.** Aiden can patch and delete files. Always work in version-controlled directories or with backups.
+- **Skills and plugins may send data externally.** Built-in capabilities are local-first, but third-party skills you install may make external API calls. Review skill source before use.
+- **OAuth providers may change behavior.** Claude Pro and ChatGPT Plus subscription routing depends on provider-side gates. If your subscription is restricted by Anthropic/OpenAI, fall back to direct API keys.
+- **Not for production-critical work without review.** Aiden is designed for personal use and exploration. For business-critical workflows, use approval mode (default) and review every action.
+
+By installing Aiden you accept these risks. The author and contributors accept no liability for data loss, financial loss, account suspensions, or any other damages arising from use of this software.
+
+For commercial deployments with support and indemnification, see [aiden.taracod.com/contact?type=enterprise](https://aiden.taracod.com/contact?type=enterprise).
 
 ---
 
@@ -75,6 +175,38 @@ Windows-only skills (clipboard history, Defender, OneNote, Outlook COM, registry
 
 ---
 
+## Get an API key
+
+Aiden needs at least one AI provider configured. You can use the setup wizard (`aiden setup`) to walk through this, or manually set keys in `.env`.
+
+**Free providers (recommended for getting started):**
+
+| Provider | Where to get a key | Free tier |
+|---|---|---|
+| **Groq** | [console.groq.com/keys](https://console.groq.com/keys) | Yes — fast Llama 3 / Qwen |
+| **Gemini** | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | Yes — generous free tier |
+| **OpenRouter** | [openrouter.ai/keys](https://openrouter.ai/keys) | Free credits + paid tier |
+| **NVIDIA NIM** | [build.nvidia.com](https://build.nvidia.com) | Free playground tier |
+
+**Paid providers:**
+
+| Provider | Where to get a key | Notes |
+|---|---|---|
+| **Anthropic** | [console.anthropic.com](https://console.anthropic.com) | Best Claude models |
+| **OpenAI** | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) | GPT-4, GPT-5 |
+| **Together AI** | [api.together.xyz/settings/api-keys](https://api.together.xyz/settings/api-keys) | Default in Aiden |
+
+**Subscription routing (use your existing subscription):**
+
+- **Claude Pro / Max** — sign in with `/auth login claude-pro` inside Aiden. Routes to your subscription quota instead of pay-as-you-go.
+- **ChatGPT Plus** — sign in with `/auth login chatgpt-plus`. Routes to Codex backend.
+
+**Fully offline (no API key needed):**
+
+- **Ollama** — install from [ollama.ai](https://ollama.ai), then `ollama pull qwen2.5:7b`. Aiden auto-detects and uses it as fallback.
+
+---
+
 ## Quick Start
 
 ### Fastest — `npx` (no install needed)
@@ -83,7 +215,7 @@ Windows-only skills (clipboard history, Defender, OneNote, Outlook COM, registry
 npx aiden-runtime
 ```
 
-That's it. Node.js 18+ is the only prerequisite. On first run the setup wizard asks which provider you want (Groq is free), validates your key, saves config to `~/.aiden/`, and starts the chat REPL. Subsequent runs skip the wizard and go straight to the assistant.
+That's it. Node.js 18+ is the only prerequisite. On first run it asks which AI provider you want (Groq is free), validates your key, saves config to `~/.aiden/`, and starts the chat REPL. Subsequent runs skip the wizard and go straight to the assistant.
 
 Or install globally for the `aiden` command:
 
@@ -92,7 +224,7 @@ npm install -g aiden-runtime
 aiden
 ```
 
-### Prerequisites
+### Prerequisites (for installer / manual builds)
 - Node.js 18+
 - Git
 - Ollama (optional, for offline mode): [ollama.ai](https://ollama.ai)
@@ -119,8 +251,17 @@ cd aiden
 npm install
 cp .env.example .env
 # Edit .env — add at minimum one API key (Groq is free: console.groq.com)
+```
+
+### Run (manual install)
+
+```bash
+# Build, then start
 npm run build
-aiden
+aiden                  # CLI
+
+# Or run the API server explicitly:
+npm start              # API server on port 4200
 ```
 
 ### After pulling updates (manual install)
@@ -134,13 +275,18 @@ aiden
 ### Uninstall
 
 **Windows**
+Open *Settings → Apps* (or *Control Panel → Programs*) and uninstall **Aiden**.
+To also remove user data:
 ```powershell
 Remove-Item -Recurse -Force "$env:APPDATA\aiden"
 Remove-Item -Recurse -Force "$env:LOCALAPPDATA\aiden"
-npm uninstall -g aiden-runtime
 ```
 
 **Linux / macOS / WSL**
+```bash
+curl -fsSL aiden.taracod.com/uninstall.sh | bash
+```
+Or manually:
 ```bash
 rm -rf ~/.local/share/aiden ~/.config/aiden
 npm uninstall -g aiden-runtime
@@ -152,34 +298,39 @@ npm uninstall -g aiden-runtime
 GROQ_API_KEY=your_key_here   # free at console.groq.com/keys
 ```
 
-You can also set `AIDEN_HEADLESS=true` to suppress the Electron GUI when running the packaged app.
+Set `AIDEN_HEADLESS=true` to suppress the Electron GUI when running the packaged app.
 
 ---
 
 ## Known limitations (v4.0.0)
 
-Shipping honest. Things that work, things that don't:
+We're shipping honest. Things that work, things that don't:
 
-**Tested and working**
+**Tested and working:**
+
 - Windows 10/11 native (primary platform, full QA)
 - Linux via WSL2 (cross-platform paths verified)
 - Together AI (default provider, fast)
 - Groq 4-slot fallback chain
 - ChatGPT Plus OAuth (verified end-to-end with Codex backend)
-- Claude Pro OAuth (verified — subscription routing, sanitized identity)
+- Claude Pro OAuth (verified — subscription routing, sanitised identity)
 
-**Untested at launch**
+**Untested at launch:**
+
 - macOS native — best-effort, may need user reports
 - Linux distributions beyond Ubuntu/Debian (Snap/Flatpak Chrome detection)
 - Hugging Face / Vercel AI Gateway providers — registered but unverified
 
-**Not in v4.0**
+**Not in v4.0:**
+
 - Subagent fanout / parallel agent swarm — single-loop only; deferred to v4.x
 - OCR — not bundled (vision-loop screen capture works, but no Tesseract)
 - Full agentskills.io ecosystem install — held pending license review
-- Telegram channel adapter — Discord/Slack/WhatsApp/Email/Webhook/Twilio working
+- Telegram channel adapter — Discord/Slack/WhatsApp/Email/Webhook/Twilio/iMessage/Signal working
+- Docker sandbox backend — dropped in v4 rewrite
 
-**Beta features**
+**Beta features:**
+
 - OAuth providers — provider-side gates may apply, use API keys as fallback
 - Auto-update — notifies on outdated version, doesn't auto-install
 
@@ -199,8 +350,10 @@ Once Aiden is running, type these in the chat prompt:
 | Browse available skills | `/skills` |
 | Run health checks | `/doctor` (or `aiden doctor` from shell) |
 | Schedule a recurring task | `/cron add "0 9 * * 1-5" 'morning briefing'` |
+| Sign in with Claude Pro | `/auth login claude-pro` |
+| Sign in with ChatGPT Plus | `/auth login chatgpt-plus` |
 
-**Ask anything in plain English** — no special syntax needed:
+**Ask anything in plain English** — no special syntax needed for regular tasks:
 
 ```
 summarize the PDF on my desktop
@@ -208,9 +361,10 @@ open chrome and search for latest AI news
 take a screenshot and describe what you see
 remind me to deploy at 5pm
 play me a popular hindi song
+what files did I download today
 ```
 
-Type `/` for the slash-command palette with instant search across all 28 commands.
+Type `/` to browse all 28 commands with instant search. Skills register their own dynamic slash commands at load time.
 
 ---
 
@@ -220,6 +374,9 @@ Type `/` for the slash-command palette with instant search across all 28 command
 ```bash
 npm run build   # always rebuild after git pull
 ```
+
+**"npm run serve" not found**
+There is no `serve` script. Use `npm start` instead.
 
 **Server not responding**
 ```bash
@@ -234,7 +391,7 @@ ollama serve             # make sure Ollama is running
 ollama pull qwen2.5:7b   # pull your chosen model
 ```
 
-**Changing Ollama model or inference settings** (no rebuild needed — edit `.env`):
+**Changing Ollama model or inference settings** (no recompile needed — edit `.env`):
 ```
 OLLAMA_MODEL=qwen2.5:7b
 OLLAMA_TEMPERATURE=0.3
@@ -257,7 +414,7 @@ Model:     aiden-3.13   (alias preserved for client compatibility)
 
 ![TUI](docs/images/tui.png)
 
-Boot card with environment + capabilities. Status pills (core / mode / model / memory). Per-turn rule separator. Random spinner phrases. Provider/context/elapsed footer.
+Boot card with environment + capabilities. Status pills (core / mode / model / memory). Per-turn rule separator. Random spinner phrases. Provider/context/elapsed footer. Runs in any terminal.
 
 ### Desktop app
 
@@ -269,7 +426,7 @@ Full chat interface with live activity panel. Local-first, connects to Ollama or
 
 ![Memory graph](docs/images/memory-graph.png)
 
-Multi-layer memory visualised — every conversation, task, and learned fact becomes a node in the local knowledge graph. Persisted to disk, searchable.
+Multi-layer memory visualised — every conversation, task, and learned pattern becomes a node in the local knowledge graph. Persisted to disk, searchable.
 
 ---
 
@@ -278,12 +435,12 @@ Multi-layer memory visualised — every conversation, task, and learned fact bec
 | Category | What Aiden does |
 |---|---|
 | **Inference & providers** | 19 providers including Anthropic, OpenAI, Groq (4-slot fallback), Together, Gemini, NVIDIA NIM, OpenRouter, DeepSeek, Mistral, Z.ai, Kimi, MiniMax, Hugging Face, custom OpenAI-compatible endpoints, and **Ollama** for fully offline. OAuth subscription routing for Claude Pro and ChatGPT Plus. |
-| **42 built-in tools** | Web search & fetch, deep research, YouTube search, Playwright browser automation (10 tools — navigate, click, type, fill, scroll, extract, screenshot, get-url, close, captcha-check), file ops (read, list, write, patch, delete, move, copy), process control (spawn, kill, list, log-read, wait), shell exec, code execution, system info, MCP bridge. |
+| **42 built-in tools** | Web search & fetch, deep research, YouTube search, Playwright browser automation (10 tools), file ops (read, list, write, patch, delete, move, copy), process control (spawn, kill, list, log-read, wait), shell exec, code execution, system info, MCP bridge, memory add/replace/remove, session list/search, skill view/list/manage. |
 | **68 bundled skills** | Composable workflows each with a `SKILL.md` prompt, optional helper scripts, and tool requirements. Includes: GitHub PR/issue workflows, NSE / Upstox / Zerodha trading, Censys / Shodan / VirusTotal lookups, Windows Defender / Task Scheduler, Docker management, YouTube content tools, ASCII art, and more. |
 | **6-layer memory** | `MEMORY.md` (declarative facts), conversation/session/workspace memory, semantic search (BM25 + embeddings), learning memory (`LESSONS.md`), structured user profile. Dirty-bit invalidation rebuilds the prompt when files change mid-session. |
-| **Channel adapters** | Discord, Slack, WhatsApp, Email (IMAP+SMTP), Webhook, Twilio SMS, iMessage (macOS), Signal — any channel routes to the same agent loop. |
-| **Computer use** | Screenshot capture, screen-state vision loop, browser automation. Mouse/keyboard automation partial. |
 | **Voice** | Edge TTS / Windows SAPI text-to-speech, speech-to-text helpers. |
+| **Channel adapters** | Discord, Slack, WhatsApp, Email (IMAP+SMTP), Webhook, Twilio SMS, iMessage (macOS), Signal — any channel triggers the same agent loop. |
+| **Computer use** | Screenshot capture, screen-state vision loop, browser automation. Mouse/keyboard automation partial. |
 | **Cron scheduler** | Persistent recurring tasks via the `croner` engine. Atomic state writes, output capture, 5/6-field cron + `@daily`/`@hourly` shortcodes. |
 | **Plugins** | Three bundled plugins: Chrome DevTools Protocol bridge, Claude Pro OAuth, ChatGPT Plus OAuth. Plugin system with permission-state machine (pending-grant / loaded / suspended). |
 | **MCP** | Model Context Protocol bridge — stdio + HTTP transports, schema discovery, tool dispatch. |
@@ -397,29 +554,93 @@ Optional: set `AIDEN_API_KEY=your-secret` in `.env` to require Bearer-token auth
 
 ---
 
-## Slash commands
+## Commands
 
-28 commands organised by section. Type `/` in the chat prompt for autocomplete.
+### Start Aiden
+| Command | Description |
+|---|---|
+| `npx aiden-runtime` | Install, configure, and start (recommended) |
+| `aiden` | Start the chat REPL |
+| `aiden doctor` | Run diagnostic health checks |
+| `aiden setup` | Re-run the setup wizard |
+| `npm start` | Start the API server (port 4200) |
+| `npm run build` | Rebuild after source changes |
 
-### Session
-`/clear` `/compress` `/save` `/title`
+### In-chat slash commands (28 total)
 
-### Configuration
-`/model` `/providers` `/personality` `/skin` `/streaming` `/reasoning` `/verbose` `/debug-prompt`
+**Session**
+| Command | Description |
+|---|---|
+| `/clear` | Clear the current conversation |
+| `/compress` | Compress the conversation to free context |
+| `/save` | Save the current session |
+| `/title` | Set a title for the session |
 
-### Identity
-`/identity`
+**Configuration**
+| Command | Description |
+|---|---|
+| `/model` | Two-step provider/model picker |
+| `/providers` | List configured providers + status |
+| `/personality` | Switch personality overlay |
+| `/skin` | Switch terminal colour skin |
+| `/streaming on\|off` | Toggle streamed responses |
+| `/reasoning` | Show reasoning toggle for capable models |
+| `/verbose compact\|normal\|verbose` | Verbosity level |
+| `/debug-prompt` | Print the system prompt for inspection |
 
-### System
-`/doctor` `/license` `/plugins` `/reload-mcp` `/tools` `/skills` `/quit` `/yolo` `/usage` `/cron`
+**Identity**
+| Command | Description |
+|---|---|
+| `/identity` | Print SOUL.md / USER.md identity blocks |
 
-### Authentication
-`/auth login|logout|status`
+**System**
+| Command | Description |
+|---|---|
+| `/doctor` | Run health checks |
+| `/license` | Show / set Pro license |
+| `/plugins` | List, grant, suspend plugins |
+| `/reload-mcp` | Reconnect MCP servers |
+| `/tools` | List registered tools |
+| `/skills` | List, view, install skills |
+| `/usage` | Token usage + cost summary |
+| `/yolo` | No-approval mode (use carefully) |
+| `/cron` | Schedule recurring tasks |
+| `/quit` | Exit the REPL |
 
-### Help
-`/help`
+**Authentication**
+| Command | Description |
+|---|---|
+| `/auth login claude-pro` | Sign in with Claude Pro / Max subscription |
+| `/auth login chatgpt-plus` | Sign in with ChatGPT Plus subscription |
+| `/auth status` | Show current auth state |
+| `/auth logout` | Sign out of OAuth providers |
+
+**Help**
+| Command | Description |
+|---|---|
+| `/help` | List all commands grouped by section |
 
 Skills can register their own dynamic slash commands at load time.
+
+---
+
+## CLI vs Dashboard quick reference
+
+Both the terminal CLI and the browser dashboard (`localhost:4200/ui`) expose the full feature set. Use whichever fits your workflow.
+
+| Feature | Terminal CLI | Browser (`localhost:4200/ui`) |
+|---|---|---|
+| Chat | ✅ inline prompt | ✅ chat panel |
+| Streaming responses | ✅ token-by-token | ✅ live SSE |
+| Markdown rendering | ✅ | ✅ |
+| Slash commands | ✅ all 28 | ✅ same commands |
+| `/` command dropdown | ✅ instant, 28 commands | ✅ |
+| Provider panel | `/providers` | ✅ Providers tab |
+| Memory panel | `/identity` + tool calls | ✅ Memory tab |
+| Skills panel | `/skills` | ✅ Skills tab |
+| Plugin hooks | ✅ | ✅ |
+| MCP server mode | `aiden mcp` | — |
+| OpenAI-compatible API | — | ✅ `localhost:4200/v1` |
 
 ---
 
@@ -429,34 +650,81 @@ Skills can register their own dynamic slash commands at load time.
 - **Node.js 18+** — runtime; `node-fetch` not needed (built-in `fetch`).
 - **Electron 41** — Windows NSIS installer, Linux AppImage + .deb.
 - **Next.js (app router)** — `dashboard-next/` for the browser UI.
+- **React 18** — dashboard component model.
 - **Playwright 1.58** — browser automation backbone.
 - **Ollama** — fully offline LLM via local Ollama daemon.
 - **Model Context Protocol 1.27** — `@modelcontextprotocol/sdk` for tool / server dispatch.
-- **Vitest 4** — test runner; ~1,500 unit + integration tests.
 - **better-sqlite3** + **sql.js** — local persistence.
+- **croner** — cron scheduler.
+- **discord.js**, **@slack/web-api**, **whatsapp-web.js**, **twilio**, **nodemailer**, **imap-simple** — channel adapters.
+- **Vitest 4** — test runner; ~1,500 unit + integration tests.
+- **esbuild** + **electron-builder** — build pipeline.
+- **Cloudflare Workers** — landing page + license server + install-script proxy.
 
 ---
 
 ## Contributing
 
-Aiden is solo-built and welcomes contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow:
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 
-1. Fork and clone
-2. `npm install && npm run build`
-3. `npm test` (vitest)
-4. Open a PR against `main` with a focused commit history
+**Quickstart:**
 
-A few good first issues are pinned at https://github.com/taracodlabs/aiden/issues. Tests, skill submissions, provider adapters, channel adapters, and platform-specific bug reports are all valued.
+```bash
+git clone https://github.com/taracodlabs/aiden.git
+cd aiden
+npm install
+cp .env.example .env   # add at minimum one API key (Groq is free: console.groq.com/keys)
+npm run build
+aiden                  # CLI
+```
+
+- Bug fixes and new skills are the easiest entry points.
+- All contributors sign the [CLA](.github/CLA.md) once via PR comment.
+- Follow [Conventional Commits](https://www.conventionalcommits.org/).
+- Run `npm run typecheck` and `npm test` before opening a PR.
+
+---
+
+## Community
+
+| | |
+|---|---|
+| **Discord** | [discord.gg/gMZ3hUnQTm](https://discord.gg/gMZ3hUnQTm) — chat, support, share what you build |
+| **Skills registry** | [agentskills.io](https://agentskills.io) — agentskills.io-compatible format |
+| **Bug reports & features** | [github.com/taracodlabs/aiden/issues](https://github.com/taracodlabs/aiden/issues) |
+| **Star the repo** | [github.com/taracodlabs/aiden](https://github.com/taracodlabs/aiden) ⭐ |
+| **npm** | [`npm install -g aiden-runtime`](https://www.npmjs.com/package/aiden-runtime) |
+| **Sponsor** | [github.com/sponsors/taracodlabs](https://github.com/sponsors/taracodlabs) |
 
 ---
 
 ## Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — full system layout
-- [AGENTS.md](AGENTS.md) — agent-loop contract
-- [CONTRIBUTING.md](CONTRIBUTING.md) — contributor workflow
-- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — community standards
-- [aiden.taracod.com](https://aiden.taracod.com) — website + skill marketplace
+| Document | Description |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Layer-by-layer breakdown, data flow diagrams, skill system design |
+| [AGENTS.md](AGENTS.md) | Agent-loop contract — public API, honesty moat, memory layers |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute — skills, tools, providers, docs |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Community standards |
+| [CHANGELOG.md](CHANGELOG.md) | Full release history |
+| [.env.example](.env.example) | All ~90 environment variables with descriptions |
+| [workspace-templates/](workspace-templates/) | Starter workspace configs and example plugins |
+| **Download installer** | [github.com/taracodlabs/aiden-releases/releases/latest](https://github.com/taracodlabs/aiden-releases/releases/latest) |
+| **Releases & changelog** | [github.com/taracodlabs/aiden-releases](https://github.com/taracodlabs/aiden-releases) |
+| **License** | AGPL-3.0 core · Apache-2.0 skills |
+
+---
+
+## Migration from v3.x
+
+> v4.0.0 is a clean rewrite. Existing v3 installs need a migration step:
+
+- **npm package renamed** — `aiden-os` → `aiden-runtime`. Run `npm uninstall -g aiden-os && npm install -g aiden-runtime`.
+- **Slash commands consolidated** — v3's `/switch`, `/budget`, `/memory`, `/profile`, `/permissions`, `/sandbox`, `/retry`, `/failed`, `/publish` are gone. Use `/model`, `/usage`, `/identity`, `/yolo` for equivalent functionality. See `/help` for the v4 list.
+- **Subagent fanout removed** — v4 is single-loop only; subagent support deferred to v4.x.
+- **Docker sandbox dropped** — `AIDEN_SANDBOX_MODE` no longer applies. Tools run on the host. The `tirithScanner` secret/PII guard, `ssrfProtection`, and tiered approval engine remain as the safety layer.
+- **Skill registry install changed** — auto-fetch from external repos held pending license review. Skills install via `/skills install <local-path-or-url>` only at v4.0.
+- **Config compatible** — most environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, etc.) are recognised as-is. Copy your existing `.env` and Aiden picks them up.
 
 ---
 
@@ -474,14 +742,14 @@ Buying the book directly funds Aiden's development.
 
 Aiden is built and maintained by one person. If it saves you time, consider sponsoring:
 
-[![Sponsor on GitHub](https://img.shields.io/badge/sponsor-❤-pink)](https://github.com/sponsors/shivadeore111-design)
-[![Donate via Razorpay](https://img.shields.io/badge/donate-Razorpay-blue)](https://razorpay.me/@whitelotus9625)
+[![Sponsor on GitHub](https://img.shields.io/badge/sponsor-❤-pink?style=for-the-badge)](https://github.com/sponsors/shivadeore111-design)
+[![Donate via Razorpay](https://img.shields.io/badge/donate-Razorpay-blue?style=for-the-badge)](https://razorpay.me/@whitelotus9625)
 
 ---
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for the full history. v4.0.0 highlights:
+See [CHANGELOG.md](CHANGELOG.md) for the full history. **v4.0.0 highlights:**
 
 - 🧠 **Clean-room core rewrite** — every adapter, every prompt slot, every loop. 7 dual-attribution files rewritten under full Aiden copyright.
 - 🔌 **19 providers** including OAuth subscription routing for Claude Pro and ChatGPT Plus (subscription quota, not pay-as-you-go).

@@ -78,11 +78,10 @@ describe('Phase 21 #5 — OAuth provider routing unification', () => {
     );
   });
 
-  it('5. chatgpt-plus catalog uses Hermes-verified Codex slugs (Phase 21 #6)', () => {
+  it('5. chatgpt-plus catalog uses verified Codex slugs (Phase 21 #6)', () => {
     // Phase 21 #6: gpt-5-mini and gpt-5-codex were never valid on the
     // Codex OAuth endpoint — they're direct OpenAI API names. The
-    // canonical list below is verbatim from Hermes
-    // agent/model_metadata.py:_CODEX_OAUTH_CONTEXT_FALLBACK.
+    // canonical list below was verified via live /codex/models probe.
     const ids = listModelsForProvider('chatgpt-plus').map((m) => m.id);
     expect(ids).toEqual(
       expect.arrayContaining([

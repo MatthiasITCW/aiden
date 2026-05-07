@@ -80,9 +80,8 @@ describe('PromptBuilder', () => {
   });
 
   it('4a. memory section uses identity framing (Phase 16e)', async () => {
-    // Locks the parenthetical phrasing copied from Hermes
-    // (`tools/memory_tool.py:393-409`). Without this framing the model
-    // treats USER.md as past conversation and refuses to surface it
+    // Locks the parenthetical identity-framing phrasing. Without it,
+    // the model treats USER.md as past conversation and refuses to surface it
     // (16d run-1 smoke).
     const pb = new PromptBuilder();
     const out = await pb.build({
@@ -136,9 +135,9 @@ describe('PromptBuilder', () => {
   });
 
   it('4b. memory section includes anti-confusion system note (Phase 16e)', async () => {
-    // Locks the [System note: …] line that Hermes puts on external
-    // provider blocks (`memory_manager.py:184-188`). We apply it to the
-    // built-in MEMORY/USER blocks too because that's where the bug lived.
+    // Locks the [System note: …] anti-confusion line on external
+    // provider blocks. We apply it to the built-in MEMORY/USER blocks
+    // too because that's where the bug lived.
     const pb = new PromptBuilder();
     const out = await pb.build({
       paths: makePaths(tmp),

@@ -48,7 +48,7 @@ describe('aiden-plugin-chatgpt-plus: provider shape', () => {
     expect(desc.baseUrl).toBe('https://chatgpt.com/backend-api/codex');
   });
 
-  it('34. constants match the values pulled from the Hermes audit', () => {
+  it('34. constants match the verified upstream values', () => {
     expect(chatgptPlus.CHATGPT_PLUS.clientId).toBe(
       'app_EMoamEEZ73f0CkXaXp7hrann',
     );

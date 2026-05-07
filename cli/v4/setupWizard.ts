@@ -357,8 +357,8 @@ export function aidenHomeDisplayPath(): string {
 /**
  * Print the post-wizard tutorial — Phase 22 Task 6 boxed format.
  *
- * Replaces the prior bullet list with a Hermes-style "all your files
- * in" config map: where state lives, plus the two re-run commands
+ * Replaces the prior bullet list with an "all your files in" config
+ * map: where state lives, plus the two re-run commands
  * users will reach for next. Border colour is the brand orange so the
  * box reads as a celebration moment, not a wall of muted text. Path
  * adapts per platform via `aidenHomeDisplayPath()`.

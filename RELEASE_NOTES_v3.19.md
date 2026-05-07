@@ -88,7 +88,7 @@ Users can opt into verbose: AIDEN_LOG_LEVEL=debug npx aiden-os
 - Full logger rewrite with separate stderr pane (Investigation C — current C23
   is minimal fix)
 - Browser automation cascade (F13)
-- Skills system Hermes-imbibe (agentskills.io frontmatter)
+- Skills system upgrade (agentskills.io frontmatter)
 - /goal persistent loop
 - Checkpoints + /rollback
 - SQLite session storage
@@ -150,7 +150,7 @@ into the planner's direct_response generation prompt instead.
 - Browser automation cascade (Finding F13)
 - Optimize direct_response identity injection (remove C21 latency)
 - Workflows feature ("do it again button")
-- Skills system (Hermes-imbibe)
+- Skills system upgrade
 - /goal persistent loop
 - Checkpoints + /rollback (shadow git)
 - SQLite session storage with FTS5
@@ -263,7 +263,7 @@ successfully and version-verify post-publish.
 
 - CLI noise / logger rewrite (Finding C, ~400+ LOC)
 - Browser automation cascade (Finding F13)
-- Hermes-imbibe: skills system, /goal loop, checkpoints, SQLite session storage
+- Upgrades: skills system, /goal loop, checkpoints, SQLite session storage
 - Linux + macOS port
 
 ---

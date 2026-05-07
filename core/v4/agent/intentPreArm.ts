@@ -18,9 +18,6 @@
  * ("play me an obscure indie band nobody has heard of") cause the model
  * to skip skill_view entirely — the guard never arms, the loop falls
  * back to offer-prose, and the user never gets a real video opened.
- * Pattern + fix consulted with Hermes; see
- * docs/sprint/_internal/hermes-bug-x-y-consult.md.
- *
  * What it does
  * ────────────
  * Pure regex match on the user's incoming message.  No LLM call.  No

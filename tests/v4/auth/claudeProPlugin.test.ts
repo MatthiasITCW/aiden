@@ -52,14 +52,14 @@ describe('aiden-plugin-claude-pro: provider shape', () => {
     expect(desc.headerPrefix).toBe('Bearer ');
   });
 
-  it('25. constants match the values pulled from the Hermes audit', () => {
+  it('25. constants match the verified upstream values', () => {
     expect(claudePro.CLAUDE_PRO.clientId).toBe(
       '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
     );
     expect(claudePro.CLAUDE_PRO.authUrl).toBe(
       'https://claude.ai/oauth/authorize',
     );
-    // Phase 18.1: distinct login vs refresh ordering per Hermes.
+    // Phase 18.1: distinct login vs refresh ordering.
     expect(claudePro.CLAUDE_PRO.loginTokenUrl).toBe(
       'https://console.anthropic.com/v1/oauth/token',
     );

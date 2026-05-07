@@ -9,8 +9,7 @@
  *
  * Lists every visible slash command, grouped by sub-section under the
  * existing 'system' / 'skill' top-level categories. Sub-section headers
- * follow the Hermes-style `── Section ──` pattern (audit doc
- * _internal/hermes-ux-patterns.md §2.b).
+ * follow the `── Section ──` rule pattern.
  *
  * Sub-section assignment lives in `SUBSECTION_MAP` rather than on each
  * SlashCommand object — keeps the change to a single file. Commands

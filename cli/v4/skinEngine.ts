@@ -71,8 +71,7 @@ const DEFAULT_SKIN: SkinDefinition = {
     warn: [0xff, 0xc1, 0x07],
     success: [0x4c, 0xaf, 0x50],
     // Phase 22 colour discipline: soft cyan replaces grey for secondary
-    // text (timestamps, hints, tips, dim diagnostics). See
-    // docs/sprint/_internal/hermes-ux-patterns.md §7.
+    // text (timestamps, hints, tips, dim diagnostics).
     muted: [0x6f, 0xb3, 0xd2],
     heading: BRAND_ORANGE,
   },

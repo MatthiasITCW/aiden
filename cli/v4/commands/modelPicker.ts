@@ -8,9 +8,7 @@
  * cli/v4/commands/modelPicker.ts — Phase 22 Group B Task 3.
  *
  * Two-step interactive provider/model picker. Powers both `aiden model`
- * and `/model` with no args. Hermes-pattern port — see
- * _internal/hermes-ux-patterns.md §5.b for the cli.py reference at
- * 11174-11235.
+ * and `/model` with no args.
  *
  * Stage 1 (Provider): `⚙ Model Picker — Select Provider`
  *   • Each row shows `<name> (N models) <auth-badge> <tier-badge>`

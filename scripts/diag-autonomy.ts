@@ -79,15 +79,11 @@ async function main() {
     );
   }
 
-  // ── 4. What would Hermes do?
-  console.log('\n[4] Comparison (, see hermes-autonomy-audit.md):');
-  console.log('    Hermes: all tools always passed to model (no per-turn filter).');
-  console.log('    Hermes: skills slot framed as "MUST load if even partially relevant"');
-  console.log('    Hermes: prompt has <act_dont_ask> + <prerequisite_checks> + autonomy directives');
-  console.log('');
-  console.log('    Aiden today: 3-tool subset on fuzzy intents (the bug).');
-  console.log('    Aiden today: skills framed as "Available" (passive).');
-  console.log('    Aiden today: SOUL.md has 1 line about action ("Default to action over discussion").');
+  // ── 4. Aiden's autonomy posture ──────────────────────────────────────
+  console.log('\n[4] Aiden today:');
+  console.log('    3-tool subset on fuzzy intents (the bug).');
+  console.log('    Skills framed as "Available" (passive).');
+  console.log('    SOUL.md has 1 line about action ("Default to action over discussion").');
 
   console.log('\n━'.repeat(72));
 }

@@ -3,8 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CodexResponsesAdapter } from '../../../providers/v4/codexResponsesAdapter';
 
 /**
- * Phase 21 #6d — Codex SSE three-stage recovery, ported from Hermes
- * run_agent.py:5895-5917. The Codex backend regularly emits
+ * Phase 21 #6d — Codex SSE three-stage recovery. The Codex backend regularly emits
  * `response.completed` with an empty output[] even when items were
  * streamed. Aiden must backfill from output_item.done events OR
  * synthesize from output_text.delta accumulation, not trust the empty

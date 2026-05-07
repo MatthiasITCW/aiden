@@ -11,9 +11,8 @@
  * skill (frontmatter `required_tools: []`) and enforces it at the
  * message-final boundary in the agent loop. When the model emits a
  * final message without firing every required tool, we treat the turn
- * as incomplete and inject a corrective system message — same mechanism
- * Hermes uses for the Codex Harmony-leak case
- * (run_agent.py:12966-13022, finish_reason=incomplete + retry).
+ * as incomplete and inject a corrective system message
+ * (finish_reason=incomplete + retry).
  *
  * State is per **user turn**, not per agent-loop iteration. A user turn
  * spans every assistant/tool round-trip until a clean final message

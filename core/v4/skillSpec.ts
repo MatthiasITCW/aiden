@@ -58,7 +58,6 @@ export interface SkillFrontmatter {
    * Phase 23.1 (Bug B mechanical fix): tools the runtime must observe
    * the model invoke before letting the turn end. Order is informational;
    * presence is what's enforced. Empty/absent = no enforcement (default).
-   * See docs/sprint/_internal/hermes-skill-enforcement-audit.md.
    */
   required_tools?: string[];
   metadata?: {

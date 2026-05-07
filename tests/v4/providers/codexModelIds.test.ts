@@ -4,20 +4,19 @@ import { PROVIDER_REGISTRY } from '../../../providers/v4/registry';
 import { listModelsForProvider } from '../../../providers/v4/modelCatalog';
 
 /**
- * Phase 21 #6 — Codex model ID parity with Hermes.
+ * Phase 21 #6 — Codex model ID parity with the canonical Codex backend list.
  *
  * The bug: ChatGPT Plus inference returned 400 "model is not supported
  * when using Codex with a ChatGPT account" because Aiden's catalog
  * listed direct-OpenAI-API names (`gpt-5-mini`, `gpt-5-codex`) that
- * the Codex OAuth backend doesn't accept. Hermes maintains the
- * canonical list at agent/model_metadata.py:_CODEX_OAUTH_CONTEXT_FALLBACK
- * (verified Apr 2026 via live /codex/models probe).
+ * the Codex OAuth backend doesn't accept. The canonical list below was
+ * verified Apr 2026 via live /codex/models probe.
  *
- * These tests pin the Aiden catalog to the Hermes verbatim list so a
+ * These tests pin the Aiden catalog to the verified verbatim list so a
  * future "improvement" doesn't re-introduce invalid slugs.
  */
 
-const HERMES_VERIFIED_CODEX_SLUGS = [
+const VERIFIED_CODEX_SLUGS = [
   'gpt-5.1-codex-max',
   'gpt-5.1-codex-mini',
   'gpt-5.3-codex',
@@ -30,10 +29,10 @@ const HERMES_VERIFIED_CODEX_SLUGS = [
 ] as const;
 
 describe('Phase 21 #6 — Codex OAuth model IDs', () => {
-  it('1. modelCatalog chatgpt-plus entries match Hermes-verified slug list verbatim', () => {
+  it('1. modelCatalog chatgpt-plus entries match verified slug list verbatim', () => {
     const ids = listModelsForProvider('chatgpt-plus').map((m) => m.id);
-    // Same set as Hermes (order may differ in catalog ordering).
-    expect(new Set(ids)).toEqual(new Set(HERMES_VERIFIED_CODEX_SLUGS));
+    // Same set (order may differ in catalog ordering).
+    expect(new Set(ids)).toEqual(new Set(VERIFIED_CODEX_SLUGS));
   });
 
   it('2. modelCatalog chatgpt-plus excludes the historically-invalid direct-API slugs', () => {

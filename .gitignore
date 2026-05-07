@@ -164,5 +164,37 @@ docs/test-reports/
 FileHandling.java
 "UsersshivaDownloads 2/"
 
-# ── Personal reference material (Hermes audit notes, etc.) ───────────────────
+# ── Internal dev-process artifacts (sprint phase notes, diagnostics) ─────────
 docs/sprint/_internal/
+docs/sprint/phase-*.md
+docs/sprint/diag-*.md
+docs/sprint/v4.1-roadmap.md
+docs/agents-audit-v3.md
+docs/v4.0.0-architecture.md
+docs/CLAUDE_CHAT_BRIEFING.md
+docs/v3.19-issues-to-file.md
+docs/v3.20-candidates.md
+docs/v3.20-issues-staged.md
+docs/issue-status-report.md
+docs/v3.19.*-investigation-*.md
+docs/v3.19.5-public-note-draft.md
+docs/v3.19.5-runtime-publish-investigation.md
+docs/v3.19.5-skill-bundle-investigation.md
+docs/v3.19.5-version-display-investigation.md
+docs/v3.19.6-code-execution-review.md
+docs/v3.19.6-skill-license-audit.md
+docs/v3.19.6-skill-locations.md
+docs/v3.19.6-skill-triage.md
+docs/v3.19.8-cli-noise-quick-fix.md
+docs/v3.19.8-skill-bundle-bug.md
+docs/research/
+HERMES_AUDIT_v2.md
+config/devos.config.backup.json
+.claude/launch.json
+
+# ── Smoke harnesses (CC self-smokes; not for shipping) ──────────────────────
+scripts/smoke-*.ts
+
+# ── Server / test logs ──────────────────────────────────────────────────────
+*.log
+nse_swing_trading_poem.txt
