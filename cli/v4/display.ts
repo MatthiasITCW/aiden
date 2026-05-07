@@ -41,6 +41,77 @@ export interface ColumnSection {
 }
 
 /**
+ * Phase 26.2.7 — category emoji icons for the tool-row prefix when
+ * `AIDEN_UI_ICONS=1` is set in the environment. Default OFF (the
+ * row stays at `·`) because emoji width and font availability vary
+ * across Windows Terminal / older Console hosts / SSH sessions.
+ *
+ * Categories — tool name is matched against keys in this map:
+ *   1. exact-match first (lowercased toolName)
+ *   2. then substring match in insertion order
+ *   3. fall back to `default` (·)
+ *
+ * Keep the map small and category-based, NOT one-per-tool.
+ */
+export const TOOL_ICONS: Readonly<Record<string, string>> = {
+  // Observe / read / inspect
+  observe: '👁',
+  read: '👁',
+  file_read: '👁',
+  list: '👁',
+
+  // Think / analyze / plan
+  analyze: '🧠',
+  think: '🧠',
+  plan: '📋',
+  skills_list: '📋',
+
+  // Execute / write / run
+  execute: '⚡',
+  run: '⚡',
+  bash: '⚡',
+  powershell: '⚡',
+  code: '⚡',
+  skill_view: '⚡',
+  write: '✏',
+  edit: '✏',
+
+  // Web / browse
+  web_search: '🌐',
+  web_fetch: '🌐',
+  open_url: '🌐',
+  browser: '🌐',
+
+  // Memory
+  memory: '🧠',
+  recall: '🧠',
+
+  // Verify / test
+  verify: '🛡',
+  test: '🛡',
+
+  // Default fallback (matches current behaviour).
+  default: '·',
+};
+
+/**
+ * Phase 26.2.7 — return the category emoji for `toolName` from
+ * `TOOL_ICONS`, or `·` when nothing matches. Lowercases the input
+ * and tries exact match first, then substring match in the map's
+ * insertion order. Pure — exported for smoke testing.
+ */
+export function iconForTool(toolName: string): string {
+  const lc = toolName.toLowerCase();
+  const exact = TOOL_ICONS[lc];
+  if (exact) return exact;
+  for (const [key, glyph] of Object.entries(TOOL_ICONS)) {
+    if (key === 'default') continue;
+    if (lc.includes(key)) return glyph;
+  }
+  return TOOL_ICONS.default;
+}
+
+/**
  * Phase 26.2.6 — pool of fun spinner phrases that the chat REPL
  * picks from per-turn. Replaces the static "Initializing agent…"
  * text with a touch of personality. Single-pick-per-turn (not a
@@ -561,8 +632,15 @@ export class Display {
     const padded = name.length > TOOL_ROW_NAME_PAD
       ? name.slice(0, TOOL_ROW_NAME_PAD)
       : name.padEnd(TOOL_ROW_NAME_PAD);
+    // Phase 26.2.7 — category emoji icon when AIDEN_UI_ICONS=1, else
+    // the default muted middle-dot. Read at call-time so toggling
+    // the env var doesn't require a restart. Emoji are rendered raw
+    // (no SGR wrap) because most terminals paint emoji glyphs in
+    // their native colour and ignore foreground ANSI anyway.
+    const useIcons = process.env.AIDEN_UI_ICONS === '1';
+    const glyph = useIcons ? iconForTool(name) : sk.applyColors('·', 'muted');
     const left =
-      `  ${sk.applyColors('·', 'muted')} ` +
+      `  ${glyph} ` +
       `${sk.applyColors('tool', 'muted')} ` +
       `${sk.applyColors(padded, 'tool')} ` +
       `${sk.applyColors(argStr, 'muted')}`;
