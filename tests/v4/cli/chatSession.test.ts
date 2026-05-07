@@ -219,10 +219,12 @@ describe('ChatSession.run', () => {
     expect(out.join('')).toContain('hello there');
   });
 
-  it('renders the startup card with provider/model/tool/skill counts (Phase 23.6)', async () => {
-    // Phase 23.6: v3 visual style port.  Box wrapper gone; ASCII banner
-    // + boot status line (`● <provider> <model> · ● N skills · M tools
-    // · ○ 0 mem`) + session/version + ready ▸ /help for commands.
+  it('renders the neofetch-style sectioned startup card (Phase 26.2.4)', async () => {
+    // Phase 26.2.4: boot card is now banner + tagline + status pills row
+    // + Environment + Capabilities two-column block + scroll-shaped
+    // credits footer + bottom prompt hint. No more box wrapper, no
+    // provider name in the pills, no version/session lines, no
+    // `ready ▸` line.
     const { display, out } = mkDisplay();
     const session = new ChatSession(
       buildOpts({
@@ -235,18 +237,33 @@ describe('ChatSession.run', () => {
     );
     await session.run();
     const text = out.join('');
+    // Box wrapper still gone.
     expect(text).not.toContain('╭');
     expect(text).not.toContain('╰');
-    // Banner ASCII is present.
+    // Banner ASCII still present.
     expect(text).toMatch(/█████╗/);
-    expect(text).toContain('groq');
-    expect(text).toContain('llama-3.3-70b-versatile');
-    expect(text).toContain('3 tools');
-    expect(text).toContain('2 skills');
-    expect(text).toContain('session  ');
-    expect(text).toContain('v4.0.0');
-    expect(text).toMatch(/ready/);
+    // Tagline.
+    expect(text).toContain('Autonomous AI Engine');
+    // Status pills row — model name in pill, no provider name.
+    expect(text).toContain('● core online');
+    expect(text).toContain('● mode auto');
+    expect(text).toContain('● model llama-3.3-70b-versatile');
+    expect(text).toContain('● memory active');
+    // Two-column block.
+    expect(text).toContain('Environment');
+    expect(text).toContain('Capabilities');
+    // tools/skills counts now appear as `N loaded` rows in Environment.
+    expect(text).toContain('3 loaded');
+    expect(text).toContain('2 loaded');
+    expect(text).toContain('local-first');
+    expect(text).toContain('research · extract');
+    // Credits scroll (≥75 cols mock terminal — full scroll).
+    expect(text).toContain('Built solo');
+    expect(text).toContain('github.com/taracodlabs/aiden');
+    // Bottom prompt hint.
+    expect(text).toContain('▲ Type your message');
     expect(text).toMatch(/\/help for commands/);
+    expect(text).toContain('/skills');
   });
 
   it('renders the v3-style status footer after each turn (Phase 23.6)', async () => {

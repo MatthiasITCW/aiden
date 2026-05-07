@@ -23,10 +23,21 @@ import { marked } from 'marked';
 const TerminalRenderer: new (opts?: unknown) => unknown = require('marked-terminal').default ?? require('marked-terminal');
 
 import { SkinEngine, getSkinEngine } from './skinEngine';
+import { visibleLength } from './box';
 
 export interface SpinnerHandle {
   stop(finalText?: string): void;
   setText(text: string): void;
+}
+
+/**
+ * Phase 26.2.4 — a labelled section for the boot card's two-column
+ * Environment/Capabilities block. `key` is rendered in muted, `value`
+ * in default text. Title is rendered in brand orange.
+ */
+export interface ColumnSection {
+  title: string;
+  rows: Array<{ key: string; value: string }>;
 }
 
 export interface AgentTurnOptions {
@@ -135,17 +146,29 @@ export class Display {
   }
 
   /**
-   * Render the v3-style assistant header:
+   * Phase 26.2.3 — single-line assistant header in the Hermes
+   * `┃ Aiden` style. `┃` (U+2503 heavy vertical) and `Aiden` are
+   * both brand-orange. The thin rule that previously sat under the
+   * label is gone — the per-turn separator (printed BEFORE the user
+   * prompt by chatSession) carries that visual weight now.
    *
-   *   Aiden                       (bold brand orange)
-   *   ──────────────────────…     (muted thin rule, full width − 2)
-   *
-   * Returns the two-line string with a trailing newline so the caller
-   * can append the body directly underneath.
+   * Returns one indented line with a trailing newline.
    */
   agentHeader(): string {
+    const bar = this.skin.applyColors('┃', 'brand');
     const head = this.skin.applyColors('Aiden', 'brand');
-    return `  ${head}\n  ${this.rule()}\n`;
+    return `  ${bar} ${head}\n`;
+  }
+
+  /**
+   * Phase 26.2.3 — turn boundary marker. Writes a thin muted rule
+   * followed by a blank line. Called by `chatSession` BEFORE each
+   * user-input read except the first (boot card already emits a
+   * rule + blank). Single canonical separator for the conversation
+   * surface.
+   */
+  printTurnSeparator(): void {
+    this.out.write(`  ${this.rule()}\n\n`);
   }
 
   /**
@@ -185,6 +208,136 @@ export class Display {
     const toolsSeg = sk.applyColors(`${args.tools} tools`, 'muted');
     const memSeg = `${memDot} ${sk.applyColors(`${memCount} mem`, 'muted')}`;
     return `  ${provModel}${sep}${skillsSeg}${sep}${toolsSeg}${sep}${memSeg}`;
+  }
+
+  // ── Phase 26.2.4 — neofetch-style sectioned boot card helpers ─────
+  // Four pure renderers used by chatSession.renderStartupCard. Each
+  // returns a string with no trailing newline so the caller controls
+  // vertical rhythm. None of them branch on detection — chatSession
+  // is responsible for collecting the data; Display just paints it.
+
+  /**
+   * Status pills row — one line, four pills separated by 4 spaces.
+   * Format: `● core online    ● mode auto    ● model X    ● memory active`.
+   * Dot is success-green when on, muted when off. Label is muted, value
+   * is rendered in `agent` (off-white) for legibility without competing
+   * with the banner orange.
+   */
+  statusPillsRow(args: {
+    coreOnline: boolean;
+    mode: string;
+    model: string;
+    memoryActive: boolean;
+  }): string {
+    const sk = this.skin;
+    const dot = (on: boolean): string => sk.applyColors('●', on ? 'success' : 'muted');
+    const lab = (s: string): string => sk.applyColors(s, 'muted');
+    const val = (s: string): string => sk.applyColors(s, 'agent');
+    const pill = (on: boolean, label: string, value: string): string =>
+      `${dot(on)} ${lab(label)} ${val(value)}`;
+    return (
+      '  ' +
+      [
+        pill(args.coreOnline, 'core', args.coreOnline ? 'online' : 'starting'),
+        pill(true, 'mode', args.mode),
+        pill(true, 'model', args.model),
+        pill(args.memoryActive, 'memory', args.memoryActive ? 'active' : 'off'),
+      ].join('    ')
+    );
+  }
+
+  /**
+   * Two-column block (Environment + Capabilities). Side-by-side when
+   * `cols() >= 80`, stacked vertically below that. Title in brand,
+   * keys in muted (padded to 11 visible chars), values in `agent`.
+   */
+  twoColumnBlock(left: ColumnSection, right: ColumnSection): string {
+    const sk = this.skin;
+    const cols = this.cols();
+    const stacked = cols < 80;
+    const indent = '  ';
+    const KEY_PAD = 11;
+
+    const renderRows = (sec: ColumnSection): string[] => {
+      const rows = [sk.applyColors(sec.title, 'brand')];
+      for (const r of sec.rows) {
+        const k = sk.applyColors(r.key.padEnd(KEY_PAD), 'muted');
+        const v = sk.applyColors(r.value, 'agent');
+        rows.push(`${k}${v}`);
+      }
+      return rows;
+    };
+
+    if (stacked) {
+      const out: string[] = [];
+      for (const ln of renderRows(left)) out.push(`${indent}${ln}`);
+      out.push('');
+      for (const ln of renderRows(right)) out.push(`${indent}${ln}`);
+      return out.join('\n');
+    }
+
+    // Side-by-side. Each column capped at 40 visible chars; separator
+    // is 4 spaces. At cols=80 the right column has 32 chars to work
+    // with, which fits all hardcoded capability values.
+    const colW = Math.min(40, Math.floor((cols - indent.length - 4) / 2));
+    const sep = '    ';
+    const leftRows = renderRows(left);
+    const rightRows = renderRows(right);
+    const maxRows = Math.max(leftRows.length, rightRows.length);
+    const out: string[] = [];
+    for (let i = 0; i < maxRows; i += 1) {
+      const l = leftRows[i] ?? '';
+      const r = rightRows[i] ?? '';
+      const lVis = visibleLength(l);
+      const lPadded = lVis < colW ? l + ' '.repeat(colW - lVis) : l;
+      out.push(`${indent}${lPadded}${sep}${r}`);
+    }
+    return out.join('\n');
+  }
+
+  /**
+   * Scroll-shaped ASCII footer with the project credits. Renders the
+   * full multi-line scroll when `cols() >= 75`; otherwise falls back
+   * to a plain 4-line credits block. Each scroll structure character
+   * is rendered as a single muted SGR span — no nested colour, so the
+   * trailing reset doesn't leak into the next line. The `♥` is brand
+   * orange (its own SGR span).
+   */
+  scrollFooter(): string {
+    const sk = this.skin;
+    const m = (s: string): string => sk.applyColors(s, 'muted');
+    const heart = sk.applyColors('♥', 'brand');
+    if (this.cols() < 75) {
+      return [
+        `  ${heart}  ${m('Built solo')}`,
+        `  ${m('GitHub:  github.com/taracodlabs/aiden')}`,
+        `  ${m('Web:     aiden.taracod.com')}`,
+        `  ${m('Contact: contact@taracod.com')}`,
+      ].join('\n');
+    }
+    return [
+      m('      _____________________________________________________________'),
+      m('   ___|                                                             |___'),
+      m('   \\  |   ') + heart + m('  Built solo                                             |  /'),
+      m('    \\ |   GitHub:  github.com/taracodlabs/aiden                     | /'),
+      m('    / |   Web:     aiden.taracod.com                                | \\'),
+      m('   /__|   Contact: contact@taracod.com                              |__\\'),
+      m('   __)                                                                (__'),
+    ].join('\n');
+  }
+
+  /**
+   * Bottom prompt hint that replaces the prior `ready ▸  /help` +
+   * `✦ Tip:` lines. `▲` in brand, body in muted.
+   */
+  bottomPromptHint(): string {
+    const sk = this.skin;
+    const tri = sk.applyColors('▲', 'brand');
+    const text = sk.applyColors(
+      'Type your message · /help for commands · /skills to add more',
+      'muted',
+    );
+    return `  ${tri} ${text}`;
   }
 
   /**
@@ -255,11 +408,12 @@ export class Display {
   }
 
   /**
-   * Inquirer prompt prefix — "▲ " in brand orange.  Inquirer prepends
-   * its own padding, so we only ship the bare 2-char prefix.
+   * Inquirer prompt prefix — "● " in brand orange (Phase 26.2.3 swap
+   * from `▲` to align with Hermes's user-bullet pattern). Inquirer
+   * prepends its own padding, so we only ship the bare 2-char prefix.
    */
   promptPrefix(): string {
-    return `${this.skin.applyColors('▲', 'brand')} `;
+    return `${this.skin.applyColors('●', 'brand')} `;
   }
 
   /**
@@ -574,8 +728,10 @@ export class Display {
   streamPartial(text: string): void {
     if (!text) return;
     if (!this.streamHeaderShown) {
-      const head = this.skin.applyColors('Aiden', 'agent');
-      this.out.write(`${head}\n`);
+      // Phase 26.2.3 — share the single-line `┃ Aiden` header with
+      // non-streaming agentTurn so streamed and non-streamed responses
+      // open identically.
+      this.out.write(this.agentHeader());
       this.streamHeaderShown = true;
     }
     this.out.write(text);

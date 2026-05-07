@@ -48,7 +48,6 @@ import {
   isCompletePaste,
   hasPasteMarkers,
 } from './bracketedPaste';
-import { getRandomTip } from './tips';
 
 /** Lightweight readline / inquirer abstraction so tests can swap in stubs. */
 export interface ChatPromptApi {
@@ -237,6 +236,9 @@ export class ChatSession implements ChatSessionLike {
     try {
       while (iter < max) {
         iter += 1;
+        // Phase 26.2.3 — turn boundary rule. The boot card already ends
+        // with a rule + blank, so suppress on the very first iteration.
+        if (iter > 1) this.opts.display.printTurnSeparator();
         let input: string;
         try {
           input = await this.readUserInput(promptApi);
@@ -303,6 +305,10 @@ export class ChatSession implements ChatSessionLike {
     // Phase 22 Task 4: status bar reflects the live phase. Set on
     // entry, cleared in both success and error paths below.
     this.setStatusState({ kind: 'generating', sinceMs: Date.now() });
+    // Phase 26.2.3 — blank line between the user-input echo and the
+    // spinner / response so the eye sees user → agent as separate
+    // beats instead of butting together.
+    this.opts.display.write('\n');
     const turnStartedAt = Date.now();
     const userMsg: Message = { role: 'user', content: userInput };
 
@@ -327,7 +333,7 @@ export class ChatSession implements ChatSessionLike {
         ? this.opts.config.getValue<boolean>('display.streaming', false) === true
         : false;
 
-    const spinner = this.opts.display.startSpinner('thinking…');
+    const spinner = this.opts.display.startSpinner('Initializing agent…');
     let spinnerStopped = false;
     let streamingActive = false;
     const stopSpinnerOnce = (): void => {
@@ -411,33 +417,40 @@ export class ChatSession implements ChatSessionLike {
     }
   }
 
-  // ── Startup card (Phase 26.2.1: banner polish) ─────────────────────
+  // ── Startup card (Phase 26.2.4: neofetch-style sectioned) ──────────
   // Boot rhythm:
   //
   //     [AIDEN ASCII art in brand orange]
-  //       Autonomous AI Engine                       (muted tagline)
+  //       Autonomous AI Engine                            (muted tagline)
   //
-  //     ● <provider> <model>  ·  ● <N> skills  ·  <M> tools  ·  ○ 0 mem
-  //     ────────────────────────────────────────────────
-  //       ‹v4.0.0›  session  <id>                    (pill + session)
-  //     ────────────────────────────────────────────────
-  //     ready ▸  /help for commands
-  //       ✦ Tip: <random tip>                        (skipped < 60 cols)
+  //     ● core online    ● mode auto    ● model X    ● memory active
+  //     ────────────────────────────────────────────────────────────
   //
-  // Pure presentation — no boxen, no inline catalogs.
+  //     Environment                Capabilities
+  //       OS         Windows 11      web         research · extract
+  //       shell      PowerShell      browser     navigate · automate
+  //       runtime    local-first     files       read · patch · organize
+  //       tools      44 loaded       execution   shell · code · workflows
+  //       skills     72 loaded       memory      persistent recall
+  //
+  //     ────────────────────────────────────────────────────────────
+  //
+  //     [scroll-shaped credits footer with ♥ + GitHub/Web/Contact]
+  //
+  //     ▲ Type your message · /help for commands · /skills to add more
+  //
+  // Width-responsive: side-by-side at ≥80 cols, stacked below; scroll
+  // collapses to plain 4-line credits below 75 cols.
   async renderStartupCard(): Promise<void> {
     const display = this.opts.display;
-    const VERSION = '4.0.0';
 
     display.write('\n');
     display.printBanner();
     display.write(`  ${display.muted('Autonomous AI Engine')}\n`);
     display.write('\n');
 
-    const tools = this.opts.toolRegistry.list();
-    // Aiden's v4 SkillSummary has no `enabled` flag — every loaded skill
-    // is considered active.  v3's "enabled/total" split was meaningful
-    // because v3 tracked per-skill enable state in config; v4 doesn't.
+    // Detection
+    const toolsCount = this.opts.toolRegistry.list().length;
     let skillsLoaded = 0;
     try {
       skillsLoaded = (await this.opts.skillLoader.list()).length;
@@ -445,27 +458,53 @@ export class ChatSession implements ChatSessionLike {
       skillsLoaded = 0;
     }
 
+    // PIECE 1 — status pills row.
     display.write(
-      display.bootStatusLine({
-        provider: this.currentProviderId,
+      display.statusPillsRow({
+        coreOnline: true,
+        mode: 'auto',
         model: this.currentModelId,
-        skillsLoaded,
-        tools: tools.length,
+        memoryActive: true,
       }) + '\n',
     );
     display.write(`  ${display.rule()}\n`);
-    const sessionSlug = (this.sessionId ?? 'new').slice(0, 9);
-    display.write(
-      `  ${display.pill('', `v${VERSION}`)}  ${display.muted('session  ')}${display.muted(sessionSlug)}\n`,
-    );
-    display.write(`  ${display.rule()}\n`);
-    display.write(display.readyLine('/help for commands') + '\n');
+    display.write('\n');
 
-    // Boot tip — gated below 60 cols where wrapping would mangle it.
-    if (display.cols() >= 60) {
-      const tip = getRandomTip();
-      if (tip) display.write(`  ${display.muted(`✦ Tip: ${tip}`)}\n`);
-    }
+    // PIECE 2 — Environment + Capabilities block.
+    display.write(
+      display.twoColumnBlock(
+        {
+          title: 'Environment',
+          rows: [
+            { key: 'OS', value: detectOS() },
+            { key: 'shell', value: detectShell() },
+            { key: 'runtime', value: 'local-first' },
+            { key: 'tools', value: `${toolsCount} loaded` },
+            { key: 'skills', value: `${skillsLoaded} loaded` },
+          ],
+        },
+        {
+          title: 'Capabilities',
+          rows: [
+            { key: 'web', value: 'research · extract' },
+            { key: 'browser', value: 'navigate · automate' },
+            { key: 'files', value: 'read · patch · organize' },
+            { key: 'execution', value: 'shell · code · workflows' },
+            { key: 'memory', value: 'persistent recall' },
+          ],
+        },
+      ) + '\n',
+    );
+    display.write('\n');
+    display.write(`  ${display.rule()}\n`);
+    display.write('\n');
+
+    // PIECE 3 — scroll footer with credits.
+    display.write(display.scrollFooter() + '\n');
+    display.write('\n');
+
+    // PIECE 4 — bottom prompt hint.
+    display.write(display.bottomPromptHint() + '\n');
     display.write('\n');
   }
 
@@ -593,6 +632,68 @@ export class ChatSession implements ChatSessionLike {
  * the boot card, and have something specific to type within seconds.
  */
 export const BOOT_TRY_HINT = `Try: 'play me a popular song'  or  'list my Downloads'`;
+
+/**
+ * Phase 26.2.4 — host OS pretty name for the boot-card Environment
+ * block. Best-effort:
+ *   - win32 release ≥10.0.22000 → "Windows 11", else "Windows 10"
+ *   - darwin major maps to known names (Sequoia/Sonoma/…)
+ *   - linux reads /etc/os-release PRETTY_NAME when available
+ *
+ * Returns the platform string verbatim on unknown systems. Pure (apart
+ * from one optional sync read of /etc/os-release on linux); cheap.
+ */
+export function detectOS(): string {
+  const platform = process.platform;
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const osMod = require('node:os') as typeof import('node:os');
+  if (platform === 'win32') {
+    const m = osMod.release().match(/^(\d+)\.(\d+)\.(\d+)/);
+    if (m && parseInt(m[3], 10) >= 22000) return 'Windows 11';
+    return 'Windows 10';
+  }
+  if (platform === 'darwin') {
+    const major = parseInt(osMod.release().split('.')[0] ?? '0', 10);
+    const names: Record<number, string> = {
+      24: 'Sequoia',
+      23: 'Sonoma',
+      22: 'Ventura',
+      21: 'Monterey',
+      20: 'Big Sur',
+    };
+    return names[major] ? `macOS ${names[major]}` : 'macOS';
+  }
+  if (platform === 'linux') {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const fsSync = require('node:fs') as typeof import('node:fs');
+      const text = fsSync.readFileSync('/etc/os-release', 'utf8');
+      const m = text.match(/^PRETTY_NAME="([^"]+)"/m);
+      if (m) return m[1];
+    } catch {
+      /* ignore — fallback below */
+    }
+    return 'Linux';
+  }
+  return platform;
+}
+
+/**
+ * Phase 26.2.4 — best-effort shell name for the boot-card Environment
+ * block. On Windows: "PowerShell + WSL2" when WSL_DISTRO_NAME is set,
+ * else "PowerShell" when PSModulePath is present, else "cmd". On POSIX:
+ * the basename of $SHELL, or "sh" as a last resort.
+ */
+export function detectShell(): string {
+  if (process.platform === 'win32') {
+    if (process.env.PSModulePath) {
+      return process.env.WSL_DISTRO_NAME ? 'PowerShell + WSL2' : 'PowerShell';
+    }
+    return 'cmd';
+  }
+  const sh = process.env.SHELL ?? '';
+  return sh.split('/').pop() || 'sh';
+}
 
 /**
  * Phase 22 Task 4 — discriminated union for the status bar's
