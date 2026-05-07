@@ -180,7 +180,11 @@ export class ChatCompletionsAdapter implements ProviderAdapter {
         false,
       );
     }
-    return decodeChoice(parsed);
+    // Phase 28.2 — pass the request's tool-name set so the bare-JSON
+    // inline-tool-call detector can validate names against the schemas
+    // the provider was actually offered.
+    const knownToolNames = collectKnownToolNames(input);
+    return decodeChoice(parsed, knownToolNames);
   }
 
   // ── Streaming ────────────────────────────────────────────────────────
@@ -200,7 +204,8 @@ export class ChatCompletionsAdapter implements ProviderAdapter {
       };
       return;
     }
-    yield* decodeStream(reply.body, this.providerName);
+    const knownToolNames = collectKnownToolNames(input);
+    yield* decodeStream(reply.body, this.providerName, knownToolNames);
   }
 
   // ── Body assembly ────────────────────────────────────────────────────
@@ -418,7 +423,10 @@ function encodeMessages(messages: Message[]): WireMessage[] {
 
 // ── Decoders ────────────────────────────────────────────────────────────
 
-function decodeChoice(reply: WireResponse): ProviderCallOutput {
+function decodeChoice(
+  reply: WireResponse,
+  knownToolNames?: ReadonlySet<string>,
+): ProviderCallOutput {
   const choice = reply.choices?.[0];
   if (!choice) {
     return {
@@ -441,7 +449,7 @@ function decodeChoice(reply: WireResponse): ProviderCallOutput {
 
   if (typeof contentText === 'string' && contentText.length > 0
       && toolCalls.length === 0) {
-    const inline = extractInlineToolCalls(contentText);
+    const inline = extractInlineToolCalls(contentText, knownToolNames);
     if (inline) {
       contentText = inline.content;
       toolCalls   = inline.toolCalls;
@@ -609,8 +617,9 @@ interface StreamingTool {
 }
 
 async function* decodeStream(
-  body:         ReadableStream<Uint8Array>,
-  providerName: string,
+  body:           ReadableStream<Uint8Array>,
+  providerName:   string,
+  knownToolNames?: ReadonlySet<string>,
 ): AsyncGenerator<StreamEvent, void, void> {
   const tools:     Map<number, StreamingTool> = new Map();
   let textBuffer:  string                = '';
@@ -724,7 +733,7 @@ async function* decodeStream(
   let content: string | null = textBuffer;
   let toolCalls = finalisedToolCalls;
   if (content && toolCalls.length === 0) {
-    const inline = extractInlineToolCalls(content);
+    const inline = extractInlineToolCalls(content, knownToolNames);
     if (inline) {
       content   = inline.content;
       toolCalls = inline.toolCalls;
@@ -887,8 +896,8 @@ function decodeArgs(raw: string): Record<string, unknown> {
 }
 
 /**
- * Scan `text` for inline tool-call markers in either of the two
- * recovery formats Aiden recognises:
+ * Scan `text` for inline tool-call markers in any of three recovery
+ * formats Aiden recognises:
  *
  *   1. `<function=name(...)>`  / `<function=name {...}</function>`
  *      — Groq / Llama legacy syntax. Handled by `parseLegacyFunctionSyntax`.
@@ -896,6 +905,13 @@ function decodeArgs(raw: string): Record<string, unknown> {
  *      — public XML tool-call format used by Qwen and several other
  *      open-source instruction-tuned models; closing tag may be missing
  *      (truncated generation) which we still recover from.
+ *   3. **Phase 28.2** — bare JSON `{"name": "...", "parameters"|"arguments": {...}}`
+ *      with NO surrounding tags. Llama / Qwen / NVIDIA-Llama
+ *      occasionally emit raw tool calls inside their answer text.
+ *      The bare-JSON detector is **conservative**: it only fires when
+ *      `knownToolNames` is provided AND the parsed `name` is in that
+ *      set. Code-fenced blocks (``` … ``` and `inline`) are masked out
+ *      first so JSON in code samples is left alone.
  *
  * Returns `null` when no recoverable marker is present at all so callers
  * can short-circuit cheaply. On recovery returns `{toolCalls, content}`
@@ -904,12 +920,32 @@ function decodeArgs(raw: string): Record<string, unknown> {
  */
 export function extractInlineToolCalls(
   text: string | null | undefined,
+  knownToolNames?: ReadonlySet<string>,
 ): { content: string | null; toolCalls: ToolCallRequest[] } | null {
   if (!text) return null;
 
   const fromFunctionSyntax = parseLegacyFunctionSyntax(text);
   const fromTagSyntax      = parseToolCallTags(text);
-  if (!fromFunctionSyntax && !fromTagSyntax) return null;
+
+  // Coarse strip of the legacy marker formats; the bare-JSON detector
+  // runs against the residual so a raw JSON object that follows a
+  // legacy tag in the same response is still caught.
+  let stripped = text;
+  if (fromFunctionSyntax || fromTagSyntax) {
+    stripped = text
+      .replace(
+        /<function=[^(<\s]+\s*(?:\([^]*?\)>|\{[^]*?\}<\/function>|\[[^]*?\]<\/function>)/g,
+        '',
+      )
+      .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
+      .replace(/<tool_call>[\s\S]*$/g, '');
+  }
+
+  const fromRawJson = knownToolNames && knownToolNames.size > 0
+    ? parseRawJsonToolCalls(stripped, knownToolNames)
+    : null;
+
+  if (!fromFunctionSyntax && !fromTagSyntax && !fromRawJson) return null;
 
   const toolCalls: ToolCallRequest[] = [];
   let n = 0;
@@ -923,24 +959,104 @@ export function extractInlineToolCalls(
       toolCalls.push({ id: `tc-inline-${n++}`, name: c.name, arguments: c.args });
     }
   }
+  if (fromRawJson) {
+    for (const c of fromRawJson.calls) {
+      toolCalls.push({ id: `tc-inline-${n++}`, name: c.name, arguments: c.args });
+    }
+  }
 
-  // Strip the matched markers from the text. Coarse but thorough:
-  //   - closed `<function=…(…)>` / `<function=… {…}</function>` / `<function=… […]</function>`
-  //   - closed `<tool_call>…</tool_call>`
-  //   - unclosed `<tool_call>…` running to end of input (truncated gen)
-  const stripped = text
-    .replace(
-      /<function=[^(<\s]+\s*(?:\([^]*?\)>|\{[^]*?\}<\/function>|\[[^]*?\]<\/function>)/g,
-      '',
-    )
-    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
-    .replace(/<tool_call>[\s\S]*$/g, '')
-    .trim();
-
+  const finalText = (fromRawJson ? fromRawJson.stripped : stripped).trim();
   return {
-    content:   stripped.length > 0 ? stripped : null,
+    content:   finalText.length > 0 ? finalText : null,
     toolCalls,
   };
+}
+
+/**
+ * Phase 28.2 — bare-JSON tool-call detector. Walks `text`, masking
+ * out fenced code blocks (``` … ```) and inline backticks, then scans
+ * for balanced `{ … }` blocks whose JSON shape is
+ *   `{ "name": "<known>", "parameters"|"arguments": { … } }`.
+ *
+ * Only fires when `name` is in `knownToolNames` (otherwise a model
+ * that quotes a JSON example in its answer would auto-execute random
+ * shapes). Returns `{ calls, stripped }` with the matched JSON spans
+ * removed from `text`, or `null` when nothing fired.
+ */
+function parseRawJsonToolCalls(
+  text: string,
+  knownToolNames: ReadonlySet<string>,
+): { calls: LegacyCall[]; stripped: string } | null {
+  if (!text) return null;
+  const masked = maskCodeBlocksForScan(text);
+
+  const calls: LegacyCall[] = [];
+  const removeRanges: Array<[number, number]> = [];
+  let cursor = 0;
+  while (cursor < masked.length) {
+    const open = masked.indexOf('{', cursor);
+    if (open === -1) break;
+    const close = matchBalanced(masked, open, '{', '}');
+    if (close === -1) break;
+    const slice = masked.slice(open, close + 1);
+    let parsed: unknown;
+    try { parsed = JSON.parse(slice); }
+    catch { cursor = open + 1; continue; }
+
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const obj = parsed as Record<string, unknown>;
+      const name = obj.name;
+      const argsRaw = (obj.parameters ?? obj.arguments) as unknown;
+      if (
+        typeof name === 'string' &&
+        argsRaw && typeof argsRaw === 'object' && !Array.isArray(argsRaw) &&
+        knownToolNames.has(name)
+      ) {
+        calls.push({ name, args: argsRaw as Record<string, unknown> });
+        removeRanges.push([open, close + 1]);
+        cursor = close + 1;
+        continue;
+      }
+    }
+    cursor = open + 1;
+  }
+
+  if (calls.length === 0) return null;
+
+  // Strip ranges from original text in reverse so earlier indexes stay valid.
+  let stripped = text;
+  for (const [start, end] of [...removeRanges].reverse()) {
+    stripped = stripped.slice(0, start) + stripped.slice(end);
+  }
+  return { calls, stripped };
+}
+
+/**
+ * Phase 28.2 — collect the set of tool names this request was made
+ * with. Used by the bare-JSON tool-call detector to validate inline
+ * `{"name": "..."}` candidates against the schemas the provider
+ * was actually offered. Empty set when no tools were sent (the
+ * detector then no-ops and the legacy paths still apply).
+ */
+function collectKnownToolNames(input: ProviderCallInput): Set<string> {
+  const out = new Set<string>();
+  if (input.tools) {
+    for (const t of input.tools) {
+      if (t && typeof t.name === 'string' && t.name.length > 0) out.add(t.name);
+    }
+  }
+  return out;
+}
+
+/**
+ * Replace fenced code blocks and inline backticks with same-length
+ * whitespace so position-based scanners can ignore JSON inside them
+ * without losing index alignment with the original text.
+ */
+function maskCodeBlocksForScan(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, (m) => ' '.repeat(m.length))
+    .replace(/`[^`\n]*`/g, (m) => ' '.repeat(m.length));
 }
 
 /**
