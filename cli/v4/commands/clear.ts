@@ -14,7 +14,7 @@ export const clear: SlashCommand = {
   name: 'clear',
   description: 'Clear conversation history.',
   category: 'system',
-  icon: '🧹',
+  icon: '*',
   handler: async (ctx) => {
     if (ctx.session) ctx.session.clearHistory();
     ctx.display.dim('History cleared.');

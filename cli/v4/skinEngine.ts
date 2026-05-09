@@ -78,7 +78,12 @@ const DEFAULT_SKIN: SkinDefinition = {
   glyphs: {
     bullet: '•',
     arrow: '›',
-    spinner: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
+    // Tier-3.1 (v4.1-tier3.1): replaced the generic braille spinner
+    // with a custom Aiden frame set derived from the ▲ prompt glyph.
+    // Six-frame rotating-triangle cadence reads as motion at the
+    // standard ~80ms tick without depending on colour, so it works
+    // identically under monochrome forks of this skin.
+    spinner: ['▲', '△', '▴', '▵', '▴', '△'],
   },
 };
 
@@ -209,6 +214,21 @@ export class SkinEngine {
    * The loaded skin becomes the active skin.
    */
   async loadSkin(name: string): Promise<SkinDefinition> {
+    // Tier-3-essentials: 'auto' resolves to a concrete skin via the
+    // multi-signal detector (AIDEN_THEME / NO_COLOR / COLORFGBG /
+    // TERM_PROGRAM, falling back to 'default'). Resolves once per
+    // call — caller can re-invoke loadSkin('auto') if env changes.
+    if (name === 'auto') {
+      // Lazy import keeps the skin loader free of detector deps in
+      // synchronous test paths that bypass loadSkin.
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { detectTheme, detectedToSkinName } = require('./themeDetect');
+      const detected = detectTheme();
+      const resolved = detectedToSkinName(detected);
+      // Re-enter loadSkin with the resolved name (no infinite loop —
+      // the detector never returns 'auto').
+      return this.loadSkin(resolved);
+    }
     if (this.cache.has(name)) {
       this.current = this.cache.get(name)!;
       return this.current;

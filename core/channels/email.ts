@@ -30,6 +30,7 @@
 import nodemailer from 'nodemailer'
 import { gateway } from '../gateway'
 import type { ChannelAdapter } from './adapter'
+import { noopLogger, type Logger } from '../v4/logger'
 
 interface RawEmail {
   messageId: string
@@ -42,6 +43,9 @@ interface RawEmail {
 export class EmailAdapter implements ChannelAdapter {
   readonly name = 'email'
 
+
+  // Phase v4.1-1.3a — diagnostics route through scope logger.
+  private log: Logger = noopLogger()
   private healthy          = false
   private imapHost:        string
   private imapPort:        number
@@ -71,15 +75,17 @@ export class EmailAdapter implements ChannelAdapter {
     this.pollIntervalMs = parseInt(process.env.EMAIL_POLL_INTERVAL ?? '60', 10) * 1000
   }
 
+  attachLogger(logger: Logger): void { this.log = logger }
+
   // ── Lifecycle ──────────────────────────────────────────────
 
   async start(): Promise<void> {
     if (!this.imapHost || !this.imapUser || !this.imapPassword) {
-      console.log('[Email] Disabled — set EMAIL_IMAP_HOST, EMAIL_IMAP_USER, EMAIL_IMAP_PASSWORD to enable')
+      this.log.info('Disabled — set EMAIL_IMAP_HOST, EMAIL_IMAP_USER, EMAIL_IMAP_PASSWORD to enable')
       return
     }
     if (!this.smtpHost || !this.smtpUser || !this.smtpPassword) {
-      console.log('[Email] Disabled — set EMAIL_SMTP_HOST, EMAIL_SMTP_USER, EMAIL_SMTP_PASSWORD to enable')
+      this.log.info('Disabled — set EMAIL_SMTP_HOST, EMAIL_SMTP_USER, EMAIL_SMTP_PASSWORD to enable')
       return
     }
 
@@ -97,12 +103,12 @@ export class EmailAdapter implements ChannelAdapter {
     // Verify SMTP connection
     const smtpOk = await this.transporter.verify().then(() => true).catch(() => false)
     if (!smtpOk) {
-      console.log('[Email] Disabled — SMTP connection failed. Check EMAIL_SMTP_* settings.')
+      this.log.info('Disabled — SMTP connection failed. Check EMAIL_SMTP_* settings.')
       return
     }
 
     this.healthy = true
-    console.log(`[Email] Ready — polling ${this.imapUser} every ${this.pollIntervalMs / 1000}s`)
+    this.log.info('Ready — polling ${this.imapUser} every ${this.pollIntervalMs / 1000}s')
 
     // Register outbound delivery
     gateway.registerChannel('email', async (msg) => {
@@ -123,7 +129,7 @@ export class EmailAdapter implements ChannelAdapter {
     }
     this.transporter = null
     gateway.unregisterChannel('email')
-    console.log('[Email] Disconnected')
+    this.log.info('Disconnected')
   }
 
   async send(target: string, message: string): Promise<void> {
@@ -137,7 +143,7 @@ export class EmailAdapter implements ChannelAdapter {
         headers: { 'X-Aiden-Reply': '1' },
       })
     } catch (e: any) {
-      console.error('[Email] send error:', e.message)
+      this.log.error(`send error:${e.message}`)
     }
   }
 
@@ -232,7 +238,7 @@ export class EmailAdapter implements ChannelAdapter {
       }
     } catch (e: any) {
       if (this.healthy) {
-        console.error('[Email] poll error:', e.message)
+        this.log.error(`poll error:${e.message}`)
       }
     } finally {
       if (connection) {
@@ -253,7 +259,7 @@ export class EmailAdapter implements ChannelAdapter {
         headers: { 'X-Aiden-Reply': '1' },
       })
     } catch (e: any) {
-      console.error('[Email] reply error:', e.message)
+      this.log.error(`reply error:${e.message}`)
     }
   }
 
@@ -282,7 +288,7 @@ export class EmailAdapter implements ChannelAdapter {
         timestamp: Date.now(),
       })
     } catch (e: any) {
-      console.error('[Email] routeMessage error:', e.message)
+      this.log.error(`routeMessage error:${e.message}`)
       return 'Something went wrong processing your email. Please try again.'
     }
   }

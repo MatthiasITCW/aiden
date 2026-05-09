@@ -34,6 +34,104 @@ const IDLE_MS         = 5 * 60 * 1000                                  // 5 min
 const NAV_TIMEOUT     = parseInt(process.env.AIDEN_BROWSER_TIMEOUT ?? '15000', 10)
 const HEADLESS        = process.env.AIDEN_BROWSER_HEADLESS === 'true'
 
+// ── Phase v4.1-subagent — Browser mutex ──────────────────────
+// One global browser context lives in this module. Subagent fanout
+// can spin up N parallel agents — if two of them claim the browser
+// at the same instant they'd collide on `_activePage` (one navigates
+// while the other reads, racing on URL state).
+//
+// The mutex is a single-slot async lock: callers `await
+// pwAcquire()`, do their work, then call the returned `release()`.
+// First arrival runs immediately; subsequent arrivals queue. Because
+// every browser tool already calls `ensureContext` / `ensurePage`
+// first, the mutex wraps the whole tool body — release is idempotent
+// so callers can call it from a `finally`.
+//
+// Common path (no contention) costs one extra microtask. A queued
+// subagent waits exactly as long as the holder takes — no busy
+// loops, no timers.
+
+let _browserBusy: boolean = false
+const _browserWaiters: Array<() => void> = []
+
+/** Public observability — number of waiters currently queued plus
+ *  the holder (if any). Used by subagent diagnostics; not part of
+ *  the tool path. */
+export function pwQueueDepth(): number {
+  return _browserWaiters.length + (_browserBusy ? 1 : 0)
+}
+
+// Optional logger sink — wired by callers that want queue / grant
+// events captured. The bridge keeps a default no-op so tests + the
+// main agent runtime don't need to wire one. Logger must be silent
+// in stdio-MCP mode (caller's responsibility to pass an mcp-stdio
+// logger if applicable).
+type PwLogger = {
+  info: (msg: string, ctx?: Record<string, unknown>) => void
+}
+let _pwLogger: PwLogger | null = null
+export function setPwLogger(logger: PwLogger | null): void {
+  _pwLogger = logger
+}
+
+/** Higher-order helper — wrap any browser-claiming code in this so
+ *  all callers queue on the same mutex. Tag identifies the caller
+ *  in the queued/granted log lines.
+ *
+ *  Integration plan: subagent fanout (Phase v4.1-subagent) wraps its
+ *  per-subagent browser tool dispatch with `withPwLock` so two
+ *  subagents claiming the browser concurrently queue. The existing
+ *  public pw* functions in this module are left as direct callers
+ *  for now — the v3 single-loop path has no contention and the
+ *  primitive can be added file-by-file as fanout flushes out the
+ *  hot paths. The smoke for v4.1-subagent tests `pwAcquire` /
+ *  `withPwLock` directly. */
+export async function withPwLock<T>(tag: string, fn: () => Promise<T>): Promise<T> {
+  const queued = _browserWaiters.length + (_browserBusy ? 1 : 0)
+  if (queued > 0 && _pwLogger) {
+    _pwLogger.info('browser mutex: queued', { tag, depth: queued })
+  }
+  const release = await pwAcquire()
+  if (_pwLogger) {
+    _pwLogger.info('browser mutex: granted', { tag })
+  }
+  try {
+    return await fn()
+  } finally {
+    release()
+  }
+}
+
+/** Acquire the browser mutex. The returned `release` is idempotent —
+ *  multiple calls are no-ops. Always call from a `finally` so a
+ *  thrown tool body never strands the lock. */
+export async function pwAcquire(): Promise<() => void> {
+  if (!_browserBusy) {
+    _browserBusy = true
+    return makeRelease()
+  }
+  return new Promise((resolve) => {
+    _browserWaiters.push(() => {
+      _browserBusy = true
+      resolve(makeRelease())
+    })
+  })
+}
+
+function makeRelease(): () => void {
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    _browserBusy = false
+    const next = _browserWaiters.shift()
+    // Defer to a microtask so the releasing call chain finishes
+    // before the next claimant starts — keeps stack depth bounded
+    // under deeply queued fanouts.
+    if (next) queueMicrotask(next)
+  }
+}
+
 function getBrowserProfileDir(): string {
   const base = getUserDataDir()
   const dir  = path.join(base, 'browser-profile')

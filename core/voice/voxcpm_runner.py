@@ -10,7 +10,7 @@
 # It reads a JSON payload from stdin and writes a JSON result to stdout.
 #
 # VoxCPM2 attribution:
-#   Model:    VoxCPM (OpenBMB / Nous Research)
+#   Model:    VoxCPM (OpenBMB)
 #   License:  Apache 2.0
 #   GitHub:   https://github.com/OpenBMB/MiniCPM-o
 #   HuggingFace: https://huggingface.co/openbmb/VoxCPM

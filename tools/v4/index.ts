@@ -72,6 +72,11 @@ import { memoryAddTool } from './memory/memoryAdd';
 import { memoryReplaceTool } from './memory/memoryReplace';
 import { memoryRemoveTool } from './memory/memoryRemove';
 
+import {
+  makeSubagentFanoutTool,
+  type SubagentFanoutFactoryOptions,
+} from './subagent/subagentFanout';
+
 /**
  * Register every read-only tool into `registry`. The
  * `lookup_tool_schema` tool needs a registry reference, so it's
@@ -111,6 +116,40 @@ export function registerReadOnlyTools(registry: ToolRegistry): void {
   registry.register(naturalEventsTool);
 
   registry.register(makeLookupToolSchema(registry));
+
+  // Phase v4.1-subagent — register a stub for subagent_fanout so its
+  // schema is visible to the agent loop, the MCP server, and the
+  // /tools slash command BEFORE the runtime resolves provider /
+  // adapter / agent dependencies. The full runtime calls
+  // `registry.register(makeSubagentFanoutTool({...real opts}))` to
+  // replace this stub once `buildAgentRuntime` has those handles.
+  // Until then, calling the stub returns a clear "not wired" error
+  // rather than crashing.
+  registry.register(makeSubagentFanoutStub());
+}
+
+/** Stub used until the runtime wires real provider / adapter / agent
+ *  dependencies. Returns the SAME schema as the real tool so MCP and
+ *  /tools see a consistent surface. */
+function makeSubagentFanoutStub() {
+  return makeSubagentFanoutTool({
+    resolveProviders:    () => [],
+    resolveActiveModel:  () => ({ providerId: 'unset', modelId: 'unset' }),
+    aggregatorAdapter:   {
+      apiMode: 'chat_completions',
+      async call() {
+        throw new Error(
+          'subagent_fanout: tool not wired — runtime did not replace the stub. ' +
+          'Call registry.register(makeSubagentFanoutTool({...})) after buildAgentRuntime.',
+        );
+      },
+    },
+    runChild: async () => {
+      throw new Error(
+        'subagent_fanout: tool not wired — runtime did not replace the stub.',
+      );
+    },
+  });
 }
 
 /**
@@ -158,6 +197,11 @@ export function registerAllTools(registry: ToolRegistry): void {
   registerReadOnlyTools(registry);
   registerWriteTools(registry);
 }
+
+export {
+  makeSubagentFanoutTool,
+  type SubagentFanoutFactoryOptions,
+} from './subagent/subagentFanout';
 
 export { webSearchTool } from './web/webSearch';
 export { webFetchTool } from './web/webFetch';

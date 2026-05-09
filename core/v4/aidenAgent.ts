@@ -61,6 +61,8 @@ import type {
   SkillTeacher,
   SkillProposalCallbacks,
 } from '../../moat/skillTeacher';
+import type { SkillMiner } from './skillMining/skillMiner';
+import type { MinedCandidate } from './skillMining/candidateStore';
 import type { PromptBuilder, PromptBuilderOptions } from './promptBuilder';
 import type { ContextCompressor, CompressionResult } from './contextCompressor';
 import type { AuxiliaryClient } from './auxiliaryClient';
@@ -122,6 +124,15 @@ export interface AidenAgentOptions {
   honestyEnforcement?:     HonestyEnforcement;
   skillTeacher?:           SkillTeacher;
   skillTeacherCallbacks?:  SkillProposalCallbacks;
+  /**
+   * Phase v4.1-skill-mining — post-turn observer that stages a
+   * candidate skill into `<aidenHome>/skills/learned/.candidates.json`
+   * on a successful complex turn. Optional; when absent the loop
+   * runs unchanged. Caller MUST gate on !isMcpServeMode().
+   */
+  skillMiner?:             SkillMiner;
+  /** Notified when skillMiner queues a candidate (chatSession renders the post-turn cue). */
+  onSkillCandidate?:       (candidate: MinedCandidate) => void;
   /** Resolves the verified flag from a tool result, used by Honesty. */
   resolveVerifiedFlag?:    (result: ToolCallResult) => boolean | undefined;
   /** Resolves a tool name to its toolset, used by SkillTeacher. */
@@ -204,6 +215,9 @@ export class AidenAgent {
   private readonly honestyEnforcement?:         HonestyEnforcement;
   private readonly skillTeacher?:               SkillTeacher;
   private readonly skillTeacherCallbacks?:      SkillProposalCallbacks;
+  private readonly skillMiner?:                 SkillMiner;
+  private readonly onSkillCandidate?:           AidenAgentOptions['onSkillCandidate'];
+  private skillMinerTurnIdx                  =  0;
   private readonly resolveVerifiedFlag?:        AidenAgentOptions['resolveVerifiedFlag'];
   private readonly resolveToolset?:             AidenAgentOptions['resolveToolset'];
   private readonly promptBuilder?:              PromptBuilder;
@@ -249,6 +263,8 @@ export class AidenAgent {
     this.honestyEnforcement       = opts.honestyEnforcement;
     this.skillTeacher             = opts.skillTeacher;
     this.skillTeacherCallbacks    = opts.skillTeacherCallbacks;
+    this.skillMiner               = opts.skillMiner;
+    this.onSkillCandidate         = opts.onSkillCandidate;
     this.resolveVerifiedFlag      = opts.resolveVerifiedFlag;
     this.resolveToolset           = opts.resolveToolset;
     this.promptBuilder            = opts.promptBuilder;
@@ -464,6 +480,39 @@ export class AidenAgent {
         }
       } catch {
         /* SkillTeacher failures must not break the turn */
+      }
+    }
+
+    // 11. SkillMiner post-loop observation. Stages a candidate into
+    //     `<aidenHome>/skills/learned/.candidates.json` for user
+    //     review via `/skills review`. Complementary to SkillTeacher
+    //     above (inline propose-and-write); the miner's queue is the
+    //     deferred, audit-first path.
+    if (this.skillMiner) {
+      try {
+        const turnIdx = this.skillMinerTurnIdx;
+        this.skillMinerTurnIdx += 1;
+        const traceForMiner = loopResult.toolCallTrace.map((entry, i) => ({
+          name:    entry.name,
+          args:    loopResult.fullTrace[i]?.args ?? {},
+          result:  entry.result,
+          error:   entry.error,
+          toolset: this.resolveToolset?.(entry.name),
+        }));
+        const sessionId =
+          (this as { sessionId?: string }).sessionId ?? 'session';
+        const outcome = await this.skillMiner.observeTurn({
+          trace:         traceForMiner,
+          sessionId,
+          sourceTurnIdx: turnIdx,
+          finishReason:  loopResult.finishReason,
+          history,
+        });
+        if (outcome.status === 'queued' && outcome.candidate && this.onSkillCandidate) {
+          this.onSkillCandidate(outcome.candidate);
+        }
+      } catch {
+        /* SkillMiner failures must not break the turn */
       }
     }
 

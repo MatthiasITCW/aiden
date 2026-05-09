@@ -24,6 +24,12 @@ const TerminalRenderer: new (opts?: unknown) => unknown = require('marked-termin
 
 import { SkinEngine, getSkinEngine } from './skinEngine';
 import { visibleLength, truncateVisible } from './box';
+// Phase v4.1-reply-formatting: skin-aware markdown renderer that
+// replaces marked-terminal's defaults with structured headers, lists,
+// code blocks, blockquotes, and links.
+import { getReplyRenderer } from './replyRenderer';
+// Optional "Sources" footer when AIDEN_CITATIONS=1 (default off).
+import { renderCitationFooter } from './citationFooter';
 
 export interface SpinnerHandle {
   stop(finalText?: string): void;
@@ -139,6 +145,129 @@ export const SPINNER_PHRASES: readonly string[] = [
   'Smelting',
   'Conjuring',
 ];
+
+/**
+ * Phase v4.1-1 — boot card "channels" pill helpers. The CLI process
+ * doesn't actually run channel adapters (those live in the API server)
+ * so we report what we *can* honestly know from the environment: how
+ * many of the nine channel adapters have their credentials present.
+ *
+ * `summarizeConfiguredChannels` returns a render-ready label like
+ * `"3 configured (incl. telegram)"` for the Environment column.
+ */
+const CHANNEL_ENV_VARS: ReadonlyArray<{ id: string; vars: readonly string[] }> = [
+  { id: 'telegram', vars: ['TELEGRAM_BOT_TOKEN'] },
+  { id: 'discord',  vars: ['DISCORD_BOT_TOKEN'] },
+  { id: 'slack',    vars: ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'] },
+  { id: 'whatsapp', vars: ['WHATSAPP_BUSINESS_API_KEY'] },
+  { id: 'twilio',   vars: ['TWILIO_AUTH_TOKEN'] },
+  { id: 'imessage', vars: ['BLUEBUBBLES_PASSWORD'] },
+  { id: 'email',    vars: ['EMAIL_IMAP_PASSWORD', 'EMAIL_SMTP_PASSWORD'] },
+];
+
+export interface ChannelConfiguredCount {
+  /** Total number of channels with at least one credential env var set. */
+  total: number;
+  /** Provider ids that count toward `total` (helpful for tests). */
+  ids: string[];
+  /** True when `TELEGRAM_BOT_TOKEN` is present — drives the boot pill suffix. */
+  telegram: boolean;
+}
+
+export function detectConfiguredChannels(
+  env: NodeJS.ProcessEnv = process.env,
+): ChannelConfiguredCount {
+  const ids: string[] = [];
+  for (const c of CHANNEL_ENV_VARS) {
+    if (c.vars.some((v) => typeof env[v] === 'string' && env[v]!.trim() !== '')) {
+      ids.push(c.id);
+    }
+  }
+  return { total: ids.length, ids, telegram: ids.includes('telegram') };
+}
+
+export function summarizeConfiguredChannels(
+  detection: ChannelConfiguredCount = detectConfiguredChannels(),
+): string {
+  if (detection.total === 0) return '0 configured';
+  const suffix = detection.telegram ? ' (incl. telegram)' : '';
+  return `${detection.total} configured${suffix}`;
+}
+
+/**
+ * Phase v4.1-1.1 — boot-card "channels" pill that distinguishes
+ * "configured but offline" from "active". The CLI now hosts a
+ * `ChannelManager` directly (not just env-var counting), so we can
+ * report real liveness:
+ *
+ *   ● 0 configured (run /channel telegram add to enable)
+ *   ● 1 active: telegram (@bot)
+ *   ● 1 configured: telegram (offline — run /channel telegram status)
+ *   ● 2 active: telegram (@bot), discord
+ *
+ * The label always renders — empty state is a teaching surface, not
+ * something to hide. When no manager is supplied we fall back to the
+ * env-only summary so non-CLI callers still get a sensible string.
+ */
+export interface ChannelStateProbe {
+  /** Per-adapter liveness — pass adapters whose isHealthy() can be queried. */
+  adapters: ReadonlyArray<{
+    id:          string;
+    healthy:     boolean;
+    /** Optional friendly handle (e.g. Telegram bot @username). */
+    botHandle?:  string | null;
+    /**
+     * Phase v4.1-1.2 — coarse state for adapters that distinguish
+     * `conflict` (another aiden instance is polling) from a generic
+     * unhealthy. Only the Telegram adapter currently emits this; other
+     * adapters will adopt it as Phase 2 lands.
+     */
+    state?:      'inactive' | 'connecting' | 'active' | 'degraded' | 'conflict';
+  }>;
+}
+
+export function summarizeChannelState(
+  probe: ChannelStateProbe | null,
+  envFallback: ChannelConfiguredCount = detectConfiguredChannels(),
+): string {
+  // No live probe (e.g. test harness with no manager) → env-only count.
+  if (!probe) {
+    if (envFallback.total === 0) {
+      return '0 configured (run /channel telegram add to enable)';
+    }
+    return `${envFallback.total} configured${envFallback.telegram ? ' (incl. telegram)' : ''}`;
+  }
+
+  // Phase v4.1-1.2 — conflict takes priority over the generic active /
+  // offline split. If any adapter is in the conflict state, surface
+  // that explicitly so the user has an unambiguous remediation hint.
+  const conflicted = probe.adapters.filter((a) => a.state === 'conflict');
+  if (conflicted.length > 0) {
+    const names = conflicted.map((a) => a.id).join(', ');
+    return `${conflicted.length} degraded: ${names} (conflict — /channel telegram takeover)`;
+  }
+
+  const active   = probe.adapters.filter((a) => a.healthy);
+  const inactive = probe.adapters.filter((a) => !a.healthy);
+
+  if (active.length === 0) {
+    if (envFallback.total === 0) {
+      return '0 configured (run /channel telegram add to enable)';
+    }
+    // Token in env but adapter not healthy — frame it as offline so
+    // the user knows /channel telegram status is the next step.
+    const offlineNames = inactive
+      .filter((a) => envFallback.ids.includes(a.id))
+      .map((a) => a.id)
+      .join(', ');
+    return offlineNames
+      ? `${envFallback.total} configured: ${offlineNames} (offline — /channel telegram status)`
+      : `${envFallback.total} configured`;
+  }
+
+  const parts = active.map((a) => (a.botHandle ? `${a.id} (@${a.botHandle})` : a.id));
+  return `${active.length} active: ${parts.join(', ')}`;
+}
 
 export interface AgentTurnOptions {
   /** Render markdown via `markdown()` before printing. Default: true. */
@@ -383,10 +512,17 @@ export class Display {
    * `cols() >= 80`, stacked vertically below that. Title in brand,
    * keys in muted (padded to 11 visible chars), values in `agent`.
    */
-  twoColumnBlock(left: ColumnSection, right: ColumnSection): string {
+  twoColumnBlock(
+    left: ColumnSection,
+    right: ColumnSection,
+    opts: { sideBySideThreshold?: number } = {},
+  ): string {
     const sk = this.skin;
     const cols = this.cols();
-    const stacked = cols < 80;
+    // Tier-3.1b: callers can raise the side-by-side threshold (boot
+    // card prefers stacked at 70-119 cols, side-by-side only at ≥120).
+    // Default 80 preserves prior behaviour for any other caller.
+    const stacked = cols < (opts.sideBySideThreshold ?? 80);
     const indent = '  ';
     const KEY_PAD = 11;
 
@@ -461,13 +597,10 @@ export class Display {
     const heart = sk.applyColors('♥', 'brand');
 
     if (this.cols() < 80) {
-      // Plain 4-line fallback (no border).
-      return [
-        `  ${heart}  ${val('Built solo')}`,
-        `  ${lab('GitHub:')}  ${val('github.com/taracodlabs/aiden')}`,
-        `  ${lab('Web:')}     ${val('aiden.taracod.com')}`,
-        `  ${lab('Contact:')} ${val('contact@taracod.com')}`,
-      ].join('\n');
+      // Tier-3.1b: single-line credits at narrow widths so the boot
+      // card stays compact. The 4-line plain fallback shipped earlier
+      // wastes vertical space when terminals already squeeze content.
+      return `  ${heart} ${m('built solo · github.com/taracodlabs/aiden · aiden.taracod.com')}`;
     }
 
     // Parchment.
@@ -562,6 +695,82 @@ export class Display {
     const elapsed = sk.applyColors(formatElapsedShort(args.elapsedMs), 'muted');
 
     return `  ${provModel}${SEP}${ctxSeg}${SEP}${elapsed}`;
+  }
+
+  /**
+   * Tier-3.1 (v4.1-tier3.1): pre-prompt status line.
+   *
+   * Single-line summary written ABOVE the input prompt on every
+   * fresh turn. Format (full, ≥76 cols):
+   *
+   *   <provider>:<model> · ctx <N>/<M>k · MCP <state> · cron <state>
+   *
+   * Width-tier degrade:
+   *   <52 cols  → only `<provider>:<model> · ctx N/Mk`
+   *   <76 cols  → drop voice indicator
+   *   ≥76 cols  → full
+   *
+   * MCP serve mode: this helper is a pure builder; callers MUST
+   * gate the actual write on `isMcpServeMode()` from
+   * `cli/v4/uiBuild.ts`. The function itself never writes.
+   */
+  renderStatusLine(args: {
+    provider:    string;
+    model:       string;
+    ctxUsed?:    number;
+    ctxMax?:     number;
+    mcpState?:   'active' | 'configured' | 'broken' | 'off';
+    cronState?:  'active' | 'configured' | 'broken' | 'off';
+    voiceRecording?: boolean;
+    cols?:       number;
+  }): string {
+    const sk = this.skin;
+    const cols = args.cols ?? this.cols();
+    const SEP = sk.applyColors(' · ', 'muted');
+
+    const colourForState = (s?: string): 'success' | 'muted' | 'error' => {
+      if (s === 'active') return 'success';
+      if (s === 'broken') return 'error';
+      return 'muted';
+    };
+    const glyphForState = (s?: string): string => {
+      if (s === 'active') return '✓';      // ✓
+      if (s === 'broken') return '✗';      // ✗
+      return '-';
+    };
+
+    const provModel =
+      sk.applyColors(args.provider, 'muted') +
+      sk.applyColors(':', 'muted') +
+      sk.applyColors(args.model, 'agent');
+
+    const ctxSeg = (() => {
+      if (args.ctxMax == null || args.ctxUsed == null) return '';
+      const usedK = Math.round(args.ctxUsed / 1000);
+      const maxK  = Math.max(1, Math.round(args.ctxMax / 1000));
+      return sk.applyColors(`ctx ${usedK}/${maxK}k`, 'muted');
+    })();
+
+    const mcpSeg = args.mcpState
+      ? sk.applyColors(`MCP ${glyphForState(args.mcpState)}`, colourForState(args.mcpState))
+      : '';
+    const cronSeg = args.cronState
+      ? sk.applyColors(`cron ${glyphForState(args.cronState)}`, colourForState(args.cronState))
+      : '';
+    const voiceSeg = args.voiceRecording
+      ? sk.applyColors('[REC]', 'error')
+      : '';
+
+    // Compose with width-tier degrade.
+    const segs: string[] = [provModel];
+    if (ctxSeg)   segs.push(ctxSeg);
+    if (cols >= 52) {
+      if (mcpSeg)  segs.push(mcpSeg);
+      if (cronSeg) segs.push(cronSeg);
+    }
+    if (cols >= 76 && voiceSeg) segs.push(voiceSeg);
+
+    return '  ' + segs.join(SEP);
   }
 
   /**
@@ -755,13 +964,22 @@ export class Display {
     return `${sk.applyColors(arrow, 'tool')} ${sk.applyColors(name, 'tool')} ${sk.applyColors(serialized, 'muted')}`;
   }
 
-  /** Render markdown to ANSI; falls back to raw text if marked-terminal failed to wire. */
+  /**
+   * Render markdown to ANSI via the v4.1-reply-formatting renderer
+   * (skin-aware headers / lists / code / quotes / links). Falls back
+   * to the marked-terminal default config if the structured renderer
+   * is unavailable, then raw text as a last resort.
+   */
   markdown(text: string): string {
     try {
-      const out = marked.parse(text);
-      return typeof out === 'string' ? out : String(out);
+      return getReplyRenderer().render(text);
     } catch {
-      return text;
+      try {
+        const out = marked.parse(text);
+        return typeof out === 'string' ? out : String(out);
+      } catch {
+        return text;
+      }
     }
   }
 
@@ -912,6 +1130,14 @@ export class Display {
 
   private streamHeaderShown = false;
   private streamLastEndedNewline = false;
+  // Phase v4.1-reply-formatting: track the running buffered stream
+  // so streamComplete can re-render it as structured markdown
+  // (headers / lists / code blocks / blockquotes) once the full
+  // body is known. During streaming the raw text remains visible
+  // — the post-stream pass clears it via cursor-up + erase-line and
+  // reprints the formatted output.
+  private streamBuffer = '';
+  private streamLineCount = 0;
 
   /**
    * Append a streamed text fragment. Writes a styled "Aiden" header on
@@ -930,9 +1156,16 @@ export class Display {
       // open identically.
       this.out.write(this.agentHeader());
       this.streamHeaderShown = true;
+      this.streamBuffer = '';
+      this.streamLineCount = 0;
     }
     this.out.write(text);
     this.streamLastEndedNewline = text.endsWith('\n');
+    // Phase v4.1-reply-formatting: track buffer + line count for the
+    // post-stream re-render. We count newlines in the OUTGOING bytes
+    // so the eraser later knows how many rows to clear.
+    this.streamBuffer += text;
+    for (let i = 0; i < text.length; i += 1) if (text[i] === '\n') this.streamLineCount += 1;
   }
 
   /**
@@ -944,8 +1177,67 @@ export class Display {
   streamComplete(): void {
     if (!this.streamHeaderShown) return;
     if (!this.streamLastEndedNewline) this.out.write('\n');
+
+    // Phase v4.1-reply-formatting: re-render the buffered stream as
+    // structured markdown — but ONLY when stdout is a TTY and the
+    // buffer actually contains markdown structure worth rendering.
+    // Plain prose with no headers / lists / fences gets left alone
+    // (no flicker, identical output). Otherwise we erase the raw
+    // streamed body via cursor-up + erase-line and reprint via the
+    // skin-aware renderer.
+    const buffered = this.streamBuffer;
+    const lines = this.streamLineCount;
+    this.streamBuffer = '';
+    this.streamLineCount = 0;
     this.streamHeaderShown = false;
     this.streamLastEndedNewline = false;
+
+    if (!this.out.isTTY) return;
+    if (process.env.AIDEN_NO_REFORMAT === '1') return;
+    // Cheap heuristic: only re-render when there's structure that
+    // benefits from formatting. Avoids flicker on short prose replies.
+    const hasStructure =
+      /^#{1,6}\s/m.test(buffered) ||
+      /^\s*[-*+]\s/m.test(buffered) ||
+      /^\s*\d+\.\s/m.test(buffered) ||
+      /^>\s/m.test(buffered) ||
+      /```/.test(buffered);
+    if (!hasStructure) return;
+
+    try {
+      // Erase the raw streamed body in place. We wrote `lines + 1`
+      // rows (header + body) — the header (`┃ Aiden`) stays, so we
+      // walk back `lines` rows and clear each.
+      // `\x1b[<n>F` = cursor-up-and-to-column-0 N times.
+      // `\x1b[J`    = erase from cursor to end of screen.
+      if (lines > 0) {
+        this.out.write(`\x1b[${lines}F\x1b[J`);
+      }
+      const formatted = this.markdown(buffered).trimEnd();
+      const indented = formatted
+        .split('\n')
+        .map((ln) => (ln ? `  ${ln}` : ''))
+        .join('\n');
+      this.out.write(indented + '\n');
+    } catch {
+      // If anything goes wrong with the re-render, leave the raw
+      // streamed text in place — graceful degradation beats flicker
+      // + corrupted output.
+    }
+  }
+
+  /**
+   * Phase v4.1-reply-formatting: render the optional "Sources"
+   * footer when AIDEN_CITATIONS=1 and the trace has fetch-class
+   * tool calls. Pure write; safe to call after a turn completes
+   * regardless of streaming/non-streaming. No-op when the env gate
+   * is off or no sources surface.
+   */
+  printCitationFooter(trace: Array<{ name: string; args?: unknown; result?: unknown }>): void {
+    const footer = renderCitationFooter(trace);
+    if (!footer) return;
+    if (!this.out.isTTY) return;
+    this.out.write(footer);
   }
 
   /**
@@ -961,6 +1253,73 @@ export class Display {
     this.out.write(`${prefix}${sk.applyColors(`${arrow} ${name}…`, 'tool')}\n`);
     this.streamLastEndedNewline = true;
   }
+}
+
+// ── Phase v4.1-voice-cli — voice indicator helper ─────────────────────
+
+/** Voice mode UI states surfaced to the indicator. */
+export type VoiceIndicatorState =
+  | 'idle'
+  | 'listening'
+  | 'recording'
+  | 'transcribing'
+  | 'speaking';
+
+/**
+ * Render a voice-mode status line. Pure builder — caller writes the
+ * result via Display.streamPartial / direct stdout. Includes a
+ * RMS-driven block bar when state is `recording`. The bar uses 8
+ * unicode block-fill levels (▏ to █) over a 0..1500 RMS range,
+ * which covers the practical loud-speech ceiling without saturating
+ * for any reasonable mic preamp.
+ *
+ * Tier-3.1 (v4.1-tier3.1): replaced 🎤 / 🔊 emoji with text-state
+ * badges `[REC]` (recording, error/red) and `[PLAY]` (speaking,
+ * success/green). Idle/listening/transcribing get the neutral
+ * `[VOX]` badge in muted colour. Same 4-char inner width keeps
+ * subsequent column alignment intact.
+ *
+ * Examples:
+ *   voiceIndicator('idle')                  → '[VOX] idle (Space to talk)'
+ *   voiceIndicator('listening')             → '[VOX] listening...'
+ *   voiceIndicator('recording', 800)        → '[REC] ▌▌▌▌▌▌  recording (Space to stop, Esc to cancel)'
+ *   voiceIndicator('transcribing')          → '[VOX] transcribing...'
+ *   voiceIndicator('speaking')              → '[PLAY] speaking...'
+ */
+export function voiceIndicator(
+  state: VoiceIndicatorState,
+  rms: number = 0,
+): string {
+  const skin = getSkinEngine();
+  const recBadge  = skin.applyColors('[REC]',  'error');
+  const playBadge = skin.applyColors('[PLAY]', 'success');
+  const voxBadge  = skin.applyColors('[VOX]',  'muted');
+  switch (state) {
+    case 'idle':
+      return `${voxBadge} idle (Space to talk)`;
+    case 'listening':
+      return `${voxBadge} listening...`;
+    case 'recording': {
+      const bar = renderRmsBar(rms);
+      return `${recBadge} ${bar}  recording (Space to stop, Esc to cancel)`;
+    }
+    case 'transcribing':
+      return `${voxBadge} transcribing...`;
+    case 'speaking':
+      return `${playBadge} speaking...`;
+    default:
+      return `${voxBadge} ${state}`;
+  }
+}
+
+const BAR_WIDTH = 12;
+const BAR_FULL_RMS = 1500;
+
+/** RMS-driven horizontal block bar. 0..BAR_FULL_RMS → 0..BAR_WIDTH chars. */
+function renderRmsBar(rms: number): string {
+  const safe = Math.max(0, Math.min(rms, BAR_FULL_RMS));
+  const filled = Math.round((safe / BAR_FULL_RMS) * BAR_WIDTH);
+  return '▌'.repeat(filled) + ' '.repeat(BAR_WIDTH - filled);
 }
 
 // ── Phase 23.5 — tool row helpers ─────────────────────────────────────

@@ -15,8 +15,8 @@
  *   - SkillTeacher        (purpose: 'skill_describe')
  *   - smart approval      (purpose: 'risk_assess', wired in Phase 14)
  *
- * resolution chain (main provider → OpenRouter → Nous Portal → custom →
- * Anthropic). Aiden v4.0.0 keeps a single resolved adapter for simplicity;
+ * resolution chain (main provider → OpenRouter → portal subscription →
+ * custom → Anthropic). Aiden v4.0.0 keeps a single resolved adapter for simplicity;
  * the multi-provider fallback chain comes back in v4.1.
  *
  * Failure mode: when the cheap model is unavailable, returns empty content

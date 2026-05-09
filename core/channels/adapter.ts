@@ -7,6 +7,14 @@
 //
 // All channel adapters (Discord, Slack, Webhook, Telegram wrapper, etc.) implement
 // this interface so the ChannelManager can start, stop, and query them uniformly.
+//
+// Phase v4.1-1.3a — adapters opt into the unified Logger contract via
+// `attachLogger`. The ChannelManager calls it on register() with a child
+// logger scoped to the adapter name (e.g. `channels.telegram`). Adapters
+// that don't implement it keep their legacy console.* behaviour — the
+// rollout is per-adapter.
+
+import type { Logger } from '../v4/logger'
 
 export interface ChannelAdapter {
   /** Unique channel name — matches gateway ChannelType where applicable */
@@ -33,4 +41,13 @@ export interface ChannelAdapter {
 
   /** True if the adapter is connected and healthy. */
   isHealthy(): boolean
+
+  /**
+   * Phase v4.1-1.3a — optional logger handoff. ChannelManager.register
+   * invokes this when present so the adapter routes diagnostics through
+   * a scoped child logger instead of console.*. Optional because the
+   * migration is rolling out adapter-by-adapter; new code must implement
+   * it (and never call console.* directly).
+   */
+  attachLogger?(logger: Logger): void
 }

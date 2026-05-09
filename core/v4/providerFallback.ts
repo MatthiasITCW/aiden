@@ -561,6 +561,32 @@ export class FallbackAdapter implements ProviderAdapter {
   }
 
   /**
+   * Phase v4.1-subagent — clone the adapter with FRESH mutable state
+   * but SHARED slot configs. Subagent fanout uses this so each
+   * subagent gets its own rate-limit bookkeeping (slotState,
+   * cooldownUntil, requestCount, activeSlotId all reset) without
+   * paying for slot-config rebuilds. The slot list and the cooldownMs
+   * / clock / observer callbacks are read-only and safely shared
+   * across clones.
+   *
+   * One subagent hitting a 429 marks ITS clone's slot as cooled-down;
+   * the parent and sibling clones still see the slot as available.
+   * That's a deliberate tradeoff: tighter contention on the same
+   * provider key, but isolation prevents one slow subagent from
+   * starving siblings via parent-side cooldown state.
+   */
+  clone(): FallbackAdapter {
+    return new FallbackAdapter({
+      apiMode:     this.apiMode,
+      slots:       this.slots,
+      cooldownMs:  this.cooldownMs,
+      now:         this.clock,
+      onRateLimit: this.onRateLimit,
+      onFallback:  this.onFallback,
+    });
+  }
+
+  /**
    * Diagnostic snapshot for `/providers`. Per-slot cooldown is reported
    * in seconds remaining (0 when the slot is fresh) so the slash command
    * can render a human countdown without doing wall-clock math itself.

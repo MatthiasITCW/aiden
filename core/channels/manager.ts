@@ -20,6 +20,7 @@
 //   // logs: "Channels: discord ✓ | slack (disabled) | webhook ✓"
 
 import type { ChannelAdapter } from './adapter'
+import { noopLogger, type Logger } from '../v4/logger'
 
 // ── Result types ───────────────────────────────────────────
 
@@ -39,13 +40,43 @@ export interface ChannelStatus {
 
 // ── ChannelManager ─────────────────────────────────────────
 
+export interface ChannelManagerOptions {
+  /**
+   * Phase v4.1-1.3a — logger for startup / lifecycle events. Defaults
+   * to noopLogger (silent). Boot path passes a real one; the singleton
+   * exposes `attachLogger()` for retroactive injection by api/server.ts.
+   */
+  logger?: Logger
+}
+
 export class ChannelManager {
   private adapters:     Map<string, ChannelAdapter> = new Map()
   private lastActivity: Map<string, number>         = new Map()
+  private log:          Logger
 
-  /** Register an adapter — must be called before startAll() */
+  constructor(opts: ChannelManagerOptions = {}) {
+    this.log = opts.logger ?? noopLogger()
+  }
+
+  /**
+   * Phase v4.1-1.3a — late-binding logger setter. Lets the singleton
+   * pick up a real logger after construction (api/server.ts boot path
+   * imports the singleton; we can't change its constructor without
+   * breaking every existing import site).
+   */
+  attachLogger(logger: Logger): void {
+    this.log = logger
+  }
+
+  /** Register an adapter — must be called before startAll(). */
   register(adapter: ChannelAdapter): void {
     this.adapters.set(adapter.name, adapter)
+    // Phase v4.1-1.3a — hand the adapter a scoped child logger so its
+    // own diagnostics route through the same sink chain as the manager.
+    // Adapters that haven't been migrated yet skip silently (no method).
+    if (typeof adapter.attachLogger === 'function') {
+      adapter.attachLogger(this.log.child(adapter.name))
+    }
   }
 
   /**
@@ -62,12 +93,14 @@ export class ChannelManager {
         const status: ChannelStartResult['status'] = adapter.isHealthy() ? 'started' : 'disabled'
         results.push({ name, status })
       } catch (error: any) {
-        console.error(`[ChannelManager] ${name} failed to start:`, error.message)
+        this.log.error(`${name} failed to start: ${error.message}`)
         results.push({ name, status: 'failed', error: String(error.message) })
       }
     }
 
-    // Summary line
+    // Summary line — single info record so log files capture the
+    // boot snapshot. CLI mode: routes to file only (REPL stays clean).
+    // Serve mode: routes to NDJSON stdout for log aggregators.
     const summary = results
       .map(r => {
         if (r.status === 'started')  return `${r.name} ✓`
@@ -76,7 +109,7 @@ export class ChannelManager {
       })
       .join(' | ')
 
-    if (results.length > 0) console.log(`[Channels] ${summary}`)
+    if (results.length > 0) this.log.info(`startup: ${summary}`)
 
     return results
   }
@@ -87,7 +120,7 @@ export class ChannelManager {
       try {
         await adapter.stop()
       } catch (e: any) {
-        console.error(`[ChannelManager] Error stopping ${adapter.name}:`, e.message)
+        this.log.error(`Error stopping ${adapter.name}: ${e.message}`)
       }
     }
   }

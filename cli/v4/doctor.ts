@@ -27,6 +27,7 @@ import { LicenseClient, hasLicense } from '../../core/v4/license';
 import { checkForUpdate } from '../../core/v4/update/checkUpdate';
 import type { Display } from './display';
 import { boxBottom, boxLine, boxTopTitled, visibleLength } from './box';
+import { detectBackend, missingBackendMessage, listKnownBackends } from '../../core/voice/audioBackend';
 
 export interface CheckResult {
   name: string;
@@ -478,6 +479,43 @@ export async function checkPlatformPaths(paths: AidenPaths): Promise<CheckResult
 }
 
 /**
+ * Phase v4.1-cross-platform: probe per-OS audio backends so a user
+ * who installs Aiden fresh on Linux/macOS gets a clear "install sox"
+ * pointer instead of a stack trace the first time they run /voice.
+ *
+ * Reports as INFO not FAILURE — the agent loop works fine without
+ * voice support; we just want to surface the install hint.
+ */
+export async function checkAudioBackend(): Promise<CheckResult> {
+  const t0 = Date.now();
+  const playback = detectBackend('playback');
+  const record   = detectBackend('record');
+  const known = {
+    playback: listKnownBackends('playback').map((b) => b.label),
+    record:   listKnownBackends('record').map((b) => b.label),
+  };
+  if (playback && record) {
+    return {
+      name: 'audio backend',
+      passed: true,
+      message: `${process.platform}: playback=${playback.label} · record=${record.label}`,
+      durationMs: Date.now() - t0,
+    };
+  }
+  // Pass=true — informational. The suggestion carries the fix.
+  const missing: string[] = [];
+  if (!playback) missing.push(missingBackendMessage('playback'));
+  if (!record)   missing.push(missingBackendMessage('record'));
+  return {
+    name: 'audio backend',
+    passed: true,
+    message: `${process.platform}: voice features will not work — backends missing (known: ${[...new Set([...known.playback, ...known.record])].join(', ') || 'none'})`,
+    suggestion: missing.join(' || '),
+    durationMs: Date.now() - t0,
+  };
+}
+
+/**
  * Phase 20 Task 7: license-server reachability + local cache state.
  * `/doctor` shouldn't block when offline — we treat both "no local cache
  * (free tier)" and "server unreachable" as informational, not failures.
@@ -660,6 +698,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
   results.push(await checkBundledManifest(paths));
   results.push(await checkPlatformPaths(paths));
   results.push(await checkLogsWritable(paths));
+  results.push(await checkAudioBackend());
   // Phase 20 Task 7: license + update health.
   results.push(await checkLicense({ paths, fetchImpl, timeoutMs }));
   results.push(await checkUpdate({ paths, installedVersion, timeoutMs }));

@@ -7,8 +7,19 @@
 // All inbound messages (dashboard, Telegram, API, future channels)
 // are routed through a single processor so they share the same
 // memory, context, and tool pipeline.
+//
+// Phase v4.1-1.3a — replaced direct console.* writes with the
+// Logger contract from `core/v4/logger`. The CLI's REPL is sacred:
+// in cli-interactive mode the boot logger has no stdout sink, so
+// route/register lines go to ~/.aiden/logs/aiden.log instead of
+// corrupting the chat prompt. The legacy code path remains
+// available — until `attachLogger()` is called the noopLogger
+// silently drops every record (better than console.log for the
+// REPL invariant). api/server.ts in serve mode wires a logger
+// that writes NDJSON to stdout, preserving the daemon trace.
 
 import { sessionRouter } from './sessionRouter'
+import { noopLogger, type Logger } from './v4/logger'
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -56,6 +67,18 @@ class Gateway {
   private handlers:         Map<ChannelType, DeliveryHandler> = new Map()
   private messageProcessor: MessageHandler | null             = null
   private activeChannels:   Set<ChannelType>                  = new Set()
+  private log:              Logger = noopLogger()
+
+  // ── Logger injection ─────────────────────────────────────────
+  //
+  // Phase v4.1-1.3a — boot wires this once before any registerChannel
+  // / routeMessage call. Until then, noopLogger drops everything so
+  // accidentally-imported gateway code in tests / scripts can't leak
+  // anything to stdout.
+
+  attachLogger(logger: Logger): void {
+    this.log = logger
+  }
 
   // ── Register the central message processor (Aiden's brain) ───
 
@@ -68,7 +91,7 @@ class Gateway {
   registerChannel(channel: ChannelType, deliveryHandler: DeliveryHandler): void {
     this.handlers.set(channel, deliveryHandler)
     this.activeChannels.add(channel)
-    console.log(`[Gateway] Channel registered: ${channel}`)
+    this.log.info(`channel registered: ${channel}`)
   }
 
   // ── Unregister a channel ──────────────────────────────────────
@@ -76,7 +99,7 @@ class Gateway {
   unregisterChannel(channel: ChannelType): void {
     this.handlers.delete(channel)
     this.activeChannels.delete(channel)
-    console.log(`[Gateway] Channel unregistered: ${channel}`)
+    this.log.info(`channel unregistered: ${channel}`)
   }
 
   // ── Route an incoming message through Aiden ───────────────────
@@ -91,9 +114,9 @@ class Gateway {
     session.messageCount++
     message.sessionId    = session.sessionId
 
-    console.log(
-      `[Gateway] ${message.channel}:${message.channelId} ` +
-      `[${session.sessionId}] → "${message.text.substring(0, 60)}"`,
+    this.log.debug(
+      `${message.channel}:${message.channelId} → "${message.text.substring(0, 60)}"`,
+      { sessionId: session.sessionId },
     )
 
     const start = Date.now()
@@ -102,9 +125,7 @@ class Gateway {
       let response = await this.messageProcessor(message)
       const duration = Date.now() - start
 
-      console.log(
-        `[Gateway] Response ready (${duration}ms) → ${message.channel}`,
-      )
+      this.log.debug(`response ready → ${message.channel}`, { durationMs: duration })
 
       // Hint on Telegram first message: conversation continues on desktop
       if (message.channel === 'telegram' && session.messageCount === 1) {
@@ -113,7 +134,9 @@ class Gateway {
 
       return response
     } catch (error) {
-      console.error(`[Gateway] Processing failed:`, error)
+      this.log.error(
+        `processing failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
       return 'Something went wrong processing your message. Try again.'
     }
   }
@@ -123,14 +146,17 @@ class Gateway {
   async deliver(message: OutgoingMessage): Promise<boolean> {
     const handler = this.handlers.get(message.channel)
     if (!handler) {
-      console.log(`[Gateway] No handler for channel: ${message.channel}`)
+      this.log.warn(`no handler for channel: ${message.channel}`)
       return false
     }
 
     try {
       return await handler(message)
     } catch (error) {
-      console.error(`[Gateway] Delivery failed to ${message.channel}:`, error)
+      this.log.error(
+        `delivery failed to ${message.channel}: ` +
+          (error instanceof Error ? error.message : String(error)),
+      )
       return false
     }
   }

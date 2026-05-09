@@ -19,6 +19,7 @@
 
 import { gateway } from '../gateway'
 import type { ChannelAdapter } from './adapter'
+import { noopLogger, type Logger } from '../v4/logger'
 import type { Application } from 'express'
 
 // SMS max segment length per GSM spec
@@ -38,6 +39,9 @@ function chunkSms(text: string): string[] {
 export class TwilioAdapter implements ChannelAdapter {
   readonly name = 'sms'
 
+
+  // Phase v4.1-1.3a — diagnostics route through scope logger.
+  private log: Logger = noopLogger()
   private twilioClient:    any    = null
   private healthy                 = false
   private accountSid:      string
@@ -57,11 +61,13 @@ export class TwilioAdapter implements ChannelAdapter {
     this.app            = app ?? null
   }
 
+  attachLogger(logger: Logger): void { this.log = logger }
+
   // ── Lifecycle ──────────────────────────────────────────────
 
   async start(): Promise<void> {
     if (!this.accountSid || !this.authToken || !this.fromNumber) {
-      console.log('[SMS] Disabled — set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER to enable')
+      this.log.info('Disabled — set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER to enable')
       return
     }
 
@@ -69,7 +75,7 @@ export class TwilioAdapter implements ChannelAdapter {
     try {
       twilio = require('twilio')
     } catch (e: any) {
-      console.log('[SMS] Disabled — twilio package not available:', e.message)
+      this.log.info(`Disabled — twilio package not available:${e.message}`)
       return
     }
 
@@ -109,9 +115,9 @@ export class TwilioAdapter implements ChannelAdapter {
     }
 
     if (!this.webhookUrl) {
-      console.log('[SMS] Outbound ready — inbound SMS requires public webhook URL (set WEBHOOK_URL env or use ngrok)')
+      this.log.info('Outbound ready — inbound SMS requires public webhook URL (set WEBHOOK_URL env or use ngrok)')
     } else {
-      console.log(`[SMS] Ready — inbound webhook: ${this.webhookUrl}/api/channels/sms/inbound`)
+      this.log.info('Ready — inbound webhook: ${this.webhookUrl}/api/channels/sms/inbound')
     }
 
     this.healthy = true
@@ -121,7 +127,7 @@ export class TwilioAdapter implements ChannelAdapter {
     this.healthy = false
     gateway.unregisterChannel('sms')
     this.twilioClient = null
-    console.log('[SMS] Disconnected')
+    this.log.info('Disconnected')
   }
 
   async send(target: string, message: string): Promise<void> {
@@ -135,7 +141,7 @@ export class TwilioAdapter implements ChannelAdapter {
           to:   target,
         })
       } catch (e: any) {
-        console.error('[SMS] send error:', e.message)
+        this.log.error(`send error:${e.message}`)
         break
       }
     }
@@ -160,7 +166,7 @@ export class TwilioAdapter implements ChannelAdapter {
         timestamp: Date.now(),
       })
     } catch (e: any) {
-      console.error('[SMS] routeMessage error:', e.message)
+      this.log.error(`routeMessage error:${e.message}`)
       return 'Something went wrong. Try again.'
     }
   }

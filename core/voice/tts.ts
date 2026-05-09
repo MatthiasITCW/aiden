@@ -174,16 +174,29 @@ async function synthesizeEdge(text: string, opts: TtsOptions): Promise<TtsResult
   const voice     = opts.voice ?? DEFAULT_VOICE
   const audioPath = path.join(WORKSPACE, `tts_edge_${Date.now()}.mp3`)
   const audioFwd  = audioPath.replace(/\\/g, '/')
-  const escaped   = text.replace(/"/g, '\\"').replace(/'/g, "\\'")
   const timeout   = opts.timeoutMs ?? 20_000
+
+  // Phase v4.1-voice-cli (Piece 0) — write the user text to a UTF-8
+  // file and have Python read it from there. The old inline-escape
+  // path (`text.replace(/"/g,'\\"').replace(/'/g,"\\'")`) was
+  // brittle for any text containing both quote styles plus
+  // backticks / `${...}` (which break the JS template literal that
+  // generates the Python script). Reading from a file removes ALL
+  // escaping concerns. JSON.stringify on the file paths + voice
+  // produces valid Python string literals (JSON ⊂ Python string syntax).
+  const textFile = path.join(WORKSPACE, `tts_edge_text_${Date.now()}.txt`)
+  fs.writeFileSync(textFile, text, 'utf-8')
+  const textFileFwd = textFile.replace(/\\/g, '/')
 
   const script = `
 import asyncio, sys
 sys.stderr = open('nul', 'w')
 import edge_tts
 async def main():
-    communicate = edge_tts.Communicate("${escaped}", "${voice}")
-    await communicate.save("${audioFwd}")
+    with open(${JSON.stringify(textFileFwd)}, 'r', encoding='utf-8') as f:
+        txt = f.read()
+    communicate = edge_tts.Communicate(txt, ${JSON.stringify(voice)})
+    await communicate.save(${JSON.stringify(audioFwd)})
 asyncio.run(main())
 `.trim()
 
@@ -208,6 +221,7 @@ asyncio.run(main())
     return { provider: 'edge', durationMs: Date.now() - t0 }
   } finally {
     try { fs.unlinkSync(tmpPy) } catch { /* ignore */ }
+    try { fs.unlinkSync(textFile) } catch { /* ignore */ }
   }
 }
 

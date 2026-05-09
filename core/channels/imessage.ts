@@ -23,10 +23,14 @@ import axios from 'axios'
 import { WebSocket } from 'ws'
 import { gateway } from '../gateway'
 import type { ChannelAdapter } from './adapter'
+import { noopLogger, type Logger } from '../v4/logger'
 
 export class IMessageAdapter implements ChannelAdapter {
   readonly name = 'imessage'
 
+
+  // Phase v4.1-1.3a — diagnostics route through scope logger.
+  private log: Logger = noopLogger()
   private healthy          = false
   private baseUrl:  string
   private password: string
@@ -41,23 +45,25 @@ export class IMessageAdapter implements ChannelAdapter {
     this.allowedNumbers = raw ? new Set(raw.split(',').map(s => s.trim()).filter(Boolean)) : new Set()
   }
 
+  attachLogger(logger: Logger): void { this.log = logger }
+
   // ── Lifecycle ──────────────────────────────────────────────
 
   async start(): Promise<void> {
     if (!this.baseUrl || !this.password) {
-      console.log('[iMessage] Disabled — set BLUEBUBBLES_URL and BLUEBUBBLES_PASSWORD to enable')
+      this.log.info('Disabled — set BLUEBUBBLES_URL and BLUEBUBBLES_PASSWORD to enable')
       return
     }
 
     // Verify BlueBubbles is reachable
     const reachable = await this.checkHealth()
     if (!reachable) {
-      console.log(`[iMessage] Disabled — BlueBubbles server not reachable at ${this.baseUrl}`)
+      this.log.info('Disabled — BlueBubbles server not reachable at ${this.baseUrl}')
       return
     }
 
     this.healthy = true
-    console.log(`[iMessage] Connected to BlueBubbles at ${this.baseUrl}`)
+    this.log.info('Connected to BlueBubbles at ${this.baseUrl}')
 
     // Register outbound delivery
     gateway.registerChannel('imessage', async (msg) => {
@@ -80,7 +86,7 @@ export class IMessageAdapter implements ChannelAdapter {
       this.ws = null
     }
     gateway.unregisterChannel('imessage')
-    console.log('[iMessage] Disconnected')
+    this.log.info('Disconnected')
   }
 
   async send(target: string, message: string): Promise<void> {
@@ -95,7 +101,7 @@ export class IMessageAdapter implements ChannelAdapter {
         },
       )
     } catch (e: any) {
-      console.error('[iMessage] send error:', e.message)
+      this.log.error(`send error:${e.message}`)
     }
   }
 
@@ -122,7 +128,7 @@ export class IMessageAdapter implements ChannelAdapter {
     this.ws     = new WebSocket(`${wsUrl}?password=${encodeURIComponent(this.password)}`)
 
     this.ws.on('open', () => {
-      console.log('[iMessage] WebSocket connected')
+      this.log.info('WebSocket connected')
     })
 
     this.ws.on('message', async (raw: Buffer) => {
@@ -144,12 +150,12 @@ export class IMessageAdapter implements ChannelAdapter {
         const response = await this.processMessage(chatId || sender, sender, text)
         await this.send(chatId || sender, response)
       } catch (e: any) {
-        console.error('[iMessage] message parse error:', e.message)
+        this.log.error(`message parse error:${e.message}`)
       }
     })
 
     this.ws.on('error', (e) => {
-      console.error('[iMessage] WebSocket error:', e.message)
+      this.log.error(`WebSocket error:${e.message}`)
     })
 
     this.ws.on('close', () => {
@@ -175,7 +181,7 @@ export class IMessageAdapter implements ChannelAdapter {
         timestamp: Date.now(),
       })
     } catch (e: any) {
-      console.error('[iMessage] routeMessage error:', e.message)
+      this.log.error(`routeMessage error:${e.message}`)
       return '❌ Something went wrong. Try again.'
     }
   }

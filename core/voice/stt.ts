@@ -12,12 +12,25 @@
 //
 // If all providers fail: returns { text: '', provider: 'none', error }
 // — never throws; callers check result.text.
+//
+// Phase v4.1-3 surgical edits:
+//   - Cloud providers request `verbose_json` so we receive segment-level
+//     `avg_logprob`. The mean is exposed on the result as `confidence`
+//     (negative; closer to zero is more confident). Channel adapters
+//     (e.g. Telegram voice notes) use this to decide whether to echo
+//     a low-confidence transcript back to the user before handing it
+//     to the agent.
+//   - All `console.*` removed in favour of an injectable `Logger` from
+//     `core/v4/logger`. Defaults to a noop logger so callers without a
+//     wired logger get silence (REPL-safe). v4.1-1.3a contract.
 
 import fs   from 'fs'
 import path from 'path'
 import { exec }     from 'child_process'
 import { promisify } from 'util'
 import axios         from 'axios'
+
+import { noopLogger, type Logger } from '../v4/logger'
 
 const execAsync = promisify(exec)
 
@@ -32,12 +45,23 @@ export interface SttOptions {
   language?:      string
   /** Per-call timeout in ms (default 30 000). */
   timeoutMs?:     number
+  /**
+   * Phase v4.1-3 — diagnostics logger. Defaults to noop so legacy
+   * callers stay silent. The Telegram channel passes a scoped
+   * `bootLogger.child('stt')`.
+   */
+  logger?:        Logger
 }
 
 export interface SttResult {
   text:        string
   provider:    string
   durationMs:  number
+  /**
+   * Mean of `avg_logprob` across Whisper segments. Negative values
+   * (closer to 0 = more confident). Populated by the cloud providers
+   * when `response_format=verbose_json` is honoured; absent otherwise.
+   */
   confidence?: number
   error?:      string
 }
@@ -62,6 +86,28 @@ function resolveAudioPath(opts: SttOptions): string {
   throw new Error('SttOptions: provide audioFilePath or audioBuffer')
 }
 
+/**
+ * Compute mean of `avg_logprob` across Whisper segments — Phase v4.1-3.
+ * Returns `undefined` when the field is absent (older response shapes,
+ * non-verbose_json fallback, or no segments at all). Callers only use
+ * this when the value is finite; preserve that invariant here.
+ */
+function meanAvgLogprob(payload: unknown): number | undefined {
+  const segs = (payload as { segments?: Array<{ avg_logprob?: number }> })?.segments
+  if (!Array.isArray(segs) || segs.length === 0) return undefined
+  let sum = 0
+  let count = 0
+  for (const s of segs) {
+    const v = s?.avg_logprob
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      sum += v
+      count += 1
+    }
+  }
+  if (count === 0) return undefined
+  return sum / count
+}
+
 // ── Provider 1 — Groq Whisper ─────────────────────────────────────────────────
 
 async function transcribeGroq(audioPath: string, opts: SttOptions): Promise<SttResult> {
@@ -76,7 +122,10 @@ async function transcribeGroq(audioPath: string, opts: SttOptions): Promise<SttR
   form.append('file',  fs.createReadStream(audioPath), path.basename(audioPath))
   form.append('model', 'whisper-large-v3')
   if (opts.language) form.append('language', opts.language)
-  form.append('response_format', 'json')
+  // Phase v4.1-3 — verbose_json gives us segment-level `avg_logprob`
+  // for confidence scoring on the channel side. Groq mirrors OpenAI's
+  // Whisper response shape here.
+  form.append('response_format', 'verbose_json')
 
   const res = await axios.post(
     'https://api.groq.com/openai/v1/audio/transcriptions',
@@ -87,10 +136,12 @@ async function transcribeGroq(audioPath: string, opts: SttOptions): Promise<SttR
     },
   )
 
+  const confidence = meanAvgLogprob(res.data)
   return {
     text:       (res.data.text ?? '').trim(),
     provider:   'groq',
     durationMs: Date.now() - t0,
+    ...(typeof confidence === 'number' ? { confidence } : {}),
   }
 }
 
@@ -108,7 +159,8 @@ async function transcribeOpenAI(audioPath: string, opts: SttOptions): Promise<St
   form.append('file',  fs.createReadStream(audioPath), path.basename(audioPath))
   form.append('model', 'whisper-1')
   if (opts.language) form.append('language', opts.language)
-  form.append('response_format', 'json')
+  // Phase v4.1-3 — same verbose_json switch as Groq for parity.
+  form.append('response_format', 'verbose_json')
 
   const res = await axios.post(
     'https://api.openai.com/v1/audio/transcriptions',
@@ -119,10 +171,12 @@ async function transcribeOpenAI(audioPath: string, opts: SttOptions): Promise<St
     },
   )
 
+  const confidence = meanAvgLogprob(res.data)
   return {
     text:       (res.data.text ?? '').trim(),
     provider:   'openai',
     durationMs: Date.now() - t0,
+    ...(typeof confidence === 'number' ? { confidence } : {}),
   }
 }
 
@@ -176,6 +230,7 @@ export async function transcribe(options: SttOptions): Promise<SttResult> {
   const t0      = Date.now()
   let   tmpFile = ''
   const errors: string[] = []
+  const log     = options.logger ?? noopLogger()
 
   try {
     const audioPath = resolveAudioPath(options)
@@ -184,7 +239,11 @@ export async function transcribe(options: SttOptions): Promise<SttResult> {
     // Provider 1 — Groq
     try {
       const r = await transcribeGroq(audioPath, options)
-      console.log(`[STT] Groq Whisper: "${r.text.slice(0, 60)}" (${r.durationMs}ms)`)
+      log.info(`groq whisper transcribed`, {
+        snippet:    r.text.slice(0, 60),
+        durationMs: r.durationMs,
+        confidence: r.confidence,
+      })
       return r
     } catch (e: any) {
       errors.push(`groq: ${e.message}`)
@@ -193,7 +252,11 @@ export async function transcribe(options: SttOptions): Promise<SttResult> {
     // Provider 2 — OpenAI
     try {
       const r = await transcribeOpenAI(audioPath, options)
-      console.log(`[STT] OpenAI Whisper: "${r.text.slice(0, 60)}" (${r.durationMs}ms)`)
+      log.info(`openai whisper transcribed`, {
+        snippet:    r.text.slice(0, 60),
+        durationMs: r.durationMs,
+        confidence: r.confidence,
+      })
       return r
     } catch (e: any) {
       errors.push(`openai: ${e.message}`)
@@ -202,7 +265,10 @@ export async function transcribe(options: SttOptions): Promise<SttResult> {
     // Provider 3 — Local Whisper.cpp
     try {
       const r = await transcribeLocal(audioPath, options)
-      console.log(`[STT] Local Whisper.cpp: "${r.text.slice(0, 60)}" (${r.durationMs}ms)`)
+      log.info(`local whisper transcribed`, {
+        snippet:    r.text.slice(0, 60),
+        durationMs: r.durationMs,
+      })
       return r
     } catch (e: any) {
       errors.push(`local: ${e.message}`)
@@ -210,7 +276,7 @@ export async function transcribe(options: SttOptions): Promise<SttResult> {
 
     // All failed
     const errorMsg = errors.join(' | ')
-    console.warn(`[STT] All providers failed: ${errorMsg}`)
+    log.warn(`all providers failed`, { errors: errorMsg })
     return { text: '', provider: 'none', durationMs: Date.now() - t0, error: errorMsg }
 
   } catch (outer: any) {

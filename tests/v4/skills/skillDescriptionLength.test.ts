@@ -22,14 +22,26 @@ import path from 'node:path';
 const MAX_DESCRIPTION_CHARS = 80;
 const SKILLS_DIR = path.resolve(__dirname, '..', '..', '..', 'skills');
 
-/** Extract the `description:` value from a SKILL.md YAML frontmatter. */
+/**
+ * Extract the `description:` value from a SKILL.md YAML frontmatter.
+ * Strips a single layer of surrounding quotes ("..." or '...') so a
+ * YAML-quoted string compares equal to the unquoted skill.json field.
+ */
 function readFrontmatterDescription(raw: string): string | null {
   const lines = raw.split(/\r?\n/);
   if (lines[0] !== '---') return null;
   for (let i = 1; i < lines.length; i += 1) {
     if (lines[i] === '---') return null;
     const m = lines[i].match(/^description:\s*(.*)$/i);
-    if (m) return m[1].trim();
+    if (m) {
+      let value = m[1].trim();
+      // Strip a SINGLE wrapping quote pair if present.
+      if ((value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      return value;
+    }
   }
   return null;
 }

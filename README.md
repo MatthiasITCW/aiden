@@ -8,7 +8,7 @@
 
 Autonomous AI Engine
 
-19 providers · 68 skills · 42 tools · 8 channels · AGPL-3.0
+19 providers · 68 skills · 42 tools · 9 channels · AGPL-3.0
 
 Windows · Linux · WSL · macOS (API Mode)
 
@@ -93,7 +93,7 @@ Local-first · Self-healing routing · Browser & terminal control · Persistent 
   <img src="https://img.shields.io/badge/providers-19-f97316?style=for-the-badge" alt="19 providers" />
   <img src="https://img.shields.io/badge/skills-68-43853d?style=for-the-badge" alt="68 skills" />
   <img src="https://img.shields.io/badge/tools-42-blueviolet?style=for-the-badge" alt="42 tools" />
-  <img src="https://img.shields.io/badge/channels-8-5865f2?style=for-the-badge" alt="8 channels" />
+  <img src="https://img.shields.io/badge/channels-9-5865f2?style=for-the-badge" alt="9 channels" />
   <img src="https://img.shields.io/badge/offline-Ollama-22c55e?style=for-the-badge" alt="offline" />
   <img src="https://img.shields.io/badge/OAuth-Claude%20Pro%20%2B%20ChatGPT%20Plus-9333ea?style=for-the-badge" alt="OAuth subscriptions" />
   <img src="https://img.shields.io/badge/local--first-yes-00aaaa?style=for-the-badge" alt="local-first" />
@@ -328,8 +328,11 @@ We're shipping honest. Things that work, things that don't:
 - Subagent fanout / parallel agent swarm — single-loop only; deferred to v4.x
 - OCR — not bundled (vision-loop screen capture works, but no Tesseract)
 - Full agentskills.io ecosystem install — held pending license review
-- Telegram channel adapter — Discord/Slack/WhatsApp/Email/Webhook/Twilio/iMessage/Signal working
 - Docker sandbox backend — dropped in v4 rewrite
+
+**Landed in v4.1:**
+
+- Telegram channel adapter (DM polling + per-chat memory) — see [docs/channels/telegram.md](docs/channels/telegram.md)
 
 **Beta features:**
 
@@ -441,7 +444,7 @@ Multi-layer memory visualised — every conversation, task, and learned pattern 
 | **68 bundled skills** | Composable workflows each with a `SKILL.md` prompt, optional helper scripts, and tool requirements. Includes: GitHub PR/issue workflows, NSE / Upstox / Zerodha trading, Censys / Shodan / VirusTotal lookups, Windows Defender / Task Scheduler, Docker management, YouTube content tools, ASCII art, and more. |
 | **6-layer memory** | `MEMORY.md` (declarative facts), conversation/session/workspace memory, semantic search (BM25 + embeddings), learning memory (`LESSONS.md`), structured user profile. Dirty-bit invalidation rebuilds the prompt when files change mid-session. |
 | **Voice** | Edge TTS / Windows SAPI text-to-speech, speech-to-text helpers. |
-| **Channel adapters** | Discord, Slack, WhatsApp, Email (IMAP+SMTP), Webhook, Twilio SMS, iMessage (macOS), Signal — any channel triggers the same agent loop. |
+| **Channel adapters** | Discord, Slack, Telegram, WhatsApp, Email (IMAP+SMTP), Webhook, Twilio SMS, iMessage (macOS), Signal — any channel triggers the same agent loop. |
 | **Computer use** | Screenshot capture, screen-state vision loop, browser automation. Mouse/keyboard automation partial. |
 | **Cron scheduler** | Persistent recurring tasks via the `croner` engine. Atomic state writes, output capture, 5/6-field cron + `@daily`/`@hourly` shortcodes. |
 | **Plugins** | Three bundled plugins: Chrome DevTools Protocol bridge, Claude Pro OAuth, ChatGPT Plus OAuth. Plugin system with permission-state machine (pending-grant / loaded / suspended). |

@@ -30,6 +30,12 @@ jobs:
       # tokenStore tests use a deterministic key so the AES round-trip
       # works the same on every CI runner regardless of host identity.
       AIDEN_TOKEN_KEY: 'ci-deterministic-key-do-not-use-in-prod'
+      # Phase v4.1-cross-platform: cross-platform smoke must skip
+      # any live-provider section and must NOT compete with the
+      # dev's running Telegram bot.
+      AIDEN_NO_NETWORK: '1'
+      AIDEN_TELEGRAM_BOT_TOKEN: ''
+      TELEGRAM_BOT_TOKEN: ''
 
     steps:
       - name: Checkout
@@ -46,6 +52,15 @@ jobs:
 
       - name: TypeScript type check
         run: npx tsc --noEmit -p tsconfig.json
+
+      - name: Build
+        run: npm run build
+
+      - name: Cross-platform smoke (offline)
+        run: npx ts-node scripts/smoke-v4.1-cross-platform.ts
+
+      - name: Cross-platform smoke (built artifact)
+        run: npx ts-node scripts/smoke-v4.1-cross-platform-runtime.ts
 
       - name: Run vitest (excludes live-network integration suite)
         # Live-API tests in tests/v4/integration/* are gated behind the

@@ -30,10 +30,14 @@ import * as crypto from 'crypto'
 import type { Express, Request, Response } from 'express'
 import { gateway } from '../gateway'
 import type { ChannelAdapter } from './adapter'
+import { noopLogger, type Logger } from '../v4/logger'
 
 export class WebhookAdapter implements ChannelAdapter {
   readonly name = 'webhook'
 
+
+  // Phase v4.1-1.3a — diagnostics route through scope logger.
+  private log: Logger = noopLogger()
   private secret:         string
   private allowedOrigins: string[]
   private healthy         = false
@@ -48,16 +52,18 @@ export class WebhookAdapter implements ChannelAdapter {
     this.app = app ?? null
   }
 
+  attachLogger(logger: Logger): void { this.log = logger }
+
   // ── Lifecycle ──────────────────────────────────────────────
 
   async start(): Promise<void> {
     if (!this.app) {
-      console.warn('[Webhook] No Express app provided — endpoint not registered')
+      this.log.warn('No Express app provided — endpoint not registered')
       return
     }
 
     if (!this.secret) {
-      console.log('[Webhook] Disabled — set WEBHOOK_SECRET to enable')
+      this.log.info('Disabled — set WEBHOOK_SECRET to enable')
       // Register the route but return 503 so callers get a clear error
       this.app.post('/api/webhook', (_req: Request, res: Response) => {
         res.status(503).json({ error: 'Webhook disabled — set WEBHOOK_SECRET to enable' })
@@ -120,13 +126,13 @@ export class WebhookAdapter implements ChannelAdapter {
     })
 
     this.healthy = true
-    console.log('[Webhook] Enabled — POST /api/webhook (HMAC-SHA256 required)')
+    this.log.info('Enabled — POST /api/webhook (HMAC-SHA256 required)')
   }
 
   async stop(): Promise<void> {
     this.healthy = false
     // Express routes cannot be unregistered at runtime; we simply mark unhealthy
-    console.log('[Webhook] Stopped')
+    this.log.info('Stopped')
   }
 
   /** Not applicable — webhook is request-response, not push-based */
@@ -174,7 +180,7 @@ export class WebhookAdapter implements ChannelAdapter {
         body:    JSON.stringify({ response, context }),
       })
     } catch (e: any) {
-      console.error('[Webhook] Async callback failed:', e.message)
+      this.log.error(`Async callback failed:${e.message}`)
     }
   }
 }

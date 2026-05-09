@@ -96,7 +96,11 @@ import { getIdentity, refreshIdentity } from '../core/aidenIdentity'
 import { eventBus } from '../core/eventBus'
 import { getWorkflow } from '../core/workflowTracker'
 import { getHookCount } from '../core/hooks'
-import { TelegramBot, registerTelegramCallbacks } from '../core/telegramBot'
+// Phase v4.1-1 — Telegram migrated to the standard ChannelAdapter
+// pattern. The legacy raw-fetch TelegramBot class in core/telegramBot.ts
+// is retained only for its `TelegramConfig` shape, still consumed by
+// the dashboard settings endpoint below.
+import { TelegramAdapter } from '../core/channels/telegram'
 import type { TelegramConfig } from '../core/telegramBot'
 import { callbacks } from '../core/callbackSystem'
 import { distillSession, distillAllActiveSessions } from '../core/memoryDistiller'
@@ -124,7 +128,8 @@ import { getDashboardHTML }  from './dashboard'
 
 // —— Sprint 25: module-level WebSocket clients registry (shared between createApiServer routes and startApiServer WS setup)
 let wsBroadcastClients   = new Set<any>()
-let activeTelegramBot: TelegramBot | null = null
+// (Phase v4.1-1: `activeTelegramBot` removed — channelManager now owns
+// the Telegram lifecycle through TelegramAdapter.)
 
 // N+32: per-session last exchange — used by failure trace analysis
 interface LastExchange {
@@ -2785,10 +2790,10 @@ export function createApiServer(): Express {
       cfg.telegram = newTg
       saveConfig(cfg)
 
-      // Restart bot if running, or start if newly enabled
-      if (activeTelegramBot) { activeTelegramBot.stop(); activeTelegramBot = null }
-      // Note: full restart handled on next server restart — live reload intentionally omitted
-      // to avoid async complexity inside a sync express handler
+      // Phase v4.1-1: live reload remains intentionally omitted — config
+      // is persisted, channelManager picks it up on the next server boot.
+      // (Live restart through `channelManager.restart('telegram')` could
+      // land in Phase 2 once env-var → config bridging is wired.)
 
       res.json({ ok: true })
     } catch (e: any) { res.status(500).json({ error: e.message }) }
@@ -6140,61 +6145,57 @@ export function startApiServer(portArg?: number): Express {
     }
   }).catch((e: Error) => console.error('[AgentShield] Scan failed:', e.message))
 
-  // ── Telegram Bot ─────────────────────────────────────────────
+  // ── Channel adapters (all 9 channels) ───────────────────────────
+  // Phase v4.1-1 — Telegram is now a first-class ChannelAdapter,
+  // gated on `TELEGRAM_BOT_TOKEN` like the other env-driven channels.
+  //
+  // Back-compat bridge: users who configured Telegram via the
+  // dashboard (Settings → Channels → Telegram) wrote their token into
+  // the YAML config, not the environment. Promote it to
+  // `process.env.TELEGRAM_BOT_TOKEN` before adapter construction so
+  // their bot keeps working after the Phase 1 migration. Env always
+  // wins if it is already set.
   try {
     const tgCfg = (loadConfig() as any).telegram as TelegramConfig | undefined
-    if (tgCfg?.enabled && tgCfg?.botToken) {
-      const startupTime = Date.now()
-      activeTelegramBot = new TelegramBot(tgCfg)
-
-      activeTelegramBot.startPolling(async (chatId: string, text: string): Promise<string> => {
-        // ── Bot commands ─────────────────────────────────────
-        if (text === '/start') {
-          return `👋 Hey! I'm Aiden, your personal AI.\n\nYour chat ID is: \`${chatId}\`\nAdd this to Aiden Settings → Channels → Telegram → Allowed Chat IDs.\n\nThen just message me anything — I can research, code, manage files, check stocks, and more.`
-        }
-
-        if (text === '/help') {
-          return `🤖 Aiden Commands:\n\nJust type naturally — I understand:\n• "Check NIFTY price"\n• "Research top AI tools"\n• "Write a Python script for..."\n• "What's the weather in Mumbai?"\n• "Schedule a reminder for 5pm"\n\n/status — Check Aiden health\n/stop — Cancel current task`
-        }
-
-        if (text === '/status') {
-          const uptimeSec = Math.floor((Date.now() - startupTime) / 1000)
-          const uptimeStr = uptimeSec > 3600
-            ? `${Math.floor(uptimeSec / 3600)}h ${Math.floor((uptimeSec % 3600) / 60)}m`
-            : `${Math.floor(uptimeSec / 60)}m ${uptimeSec % 60}s`
-          const activeCfg  = loadConfig()
-          const provider   = activeCfg.model?.active || 'unknown'
-          const semStats   = semanticMemory.getStats()
-          return `✅ Aiden is online\nMode: auto\nProvider: ${provider}\nMemory: ${semStats.total} entries\nUptime: ${uptimeStr}`
-        }
-
-        // ── Normal message — route through unified gateway ──────
-        return await gateway.routeMessage({
-          channel:   'telegram',
-          channelId: chatId,
-          userId:    `telegram_${chatId}`,
-          text,
-          timestamp: Date.now(),
-        })
-      }).catch((e: Error) => console.error('[Telegram] Polling error:', e.message))
-
-      // Register Telegram delivery so gateway.deliver() / broadcast() can send back
-      const _tgBot = activeTelegramBot!
-      registerTelegramCallbacks(_tgBot)
-      gateway.registerChannel('telegram', async (msg) => {
-        await _tgBot.sendMessage(msg.channelId, msg.text)
-        return true
-      })
-
-      console.log('[Telegram] Bot connected and polling')
-    } else {
-      console.log('[Telegram] Bot disabled or no token configured — skipping')
+    if (
+      tgCfg?.enabled &&
+      typeof tgCfg.botToken === 'string' &&
+      tgCfg.botToken.length > 0 &&
+      !process.env.TELEGRAM_BOT_TOKEN
+    ) {
+      process.env.TELEGRAM_BOT_TOKEN = tgCfg.botToken
     }
-  } catch (e: any) {
-    console.error('[Telegram] Failed to start bot:', e.message)
+    if (
+      tgCfg?.allowedChatIds?.length &&
+      !process.env.TELEGRAM_ALLOWED_CHATS
+    ) {
+      process.env.TELEGRAM_ALLOWED_CHATS = tgCfg.allowedChatIds.join(',')
+    }
+  } catch {
+    // Config read failure is non-fatal — adapter falls through to env-only.
   }
 
-  // ── Channel adapters (all 9 channels) ───────────────────────────
+  // Phase v4.1-1.3a — attach a `serve`-mode logger so adapter / gateway
+  // diagnostics emit as NDJSON to stdout (systemd / docker capture) and
+  // mirror to <root>/logs/aiden.log. Singleton attach happens once
+  // before any startAll / register call has a chance to log.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { resolveAidenPaths } = require('../core/v4/paths') as typeof import('../core/v4/paths')
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { createBootLogger }  = require('../core/v4/logger') as typeof import('../core/v4/logger')
+    const paths = resolveAidenPaths()
+    const { logger: serveLogger } = createBootLogger({
+      mode:    'serve',
+      logsDir: paths.logsDir,
+    })
+    gateway.attachLogger(serveLogger.child('gateway'))
+    channelManager.attachLogger(serveLogger.child('channels'))
+  } catch (e: any) {
+    // Logger wiring is best-effort during boot; never block the server.
+    console.error('[ChannelManager] Logger wiring failed:', e?.message)
+  }
+
   channelManager.register(new DiscordAdapter())
   channelManager.register(new SlackAdapter())
   channelManager.register(new WebhookAdapter(app))
@@ -6203,6 +6204,7 @@ export function startApiServer(portArg?: number): Express {
   channelManager.register(new TwilioAdapter(app))
   channelManager.register(new IMessageAdapter())
   channelManager.register(new EmailAdapter())
+  channelManager.register(new TelegramAdapter())
   channelManager.startAll().catch((e: Error) =>
     console.error('[ChannelManager] Startup error:', e.message),
   )

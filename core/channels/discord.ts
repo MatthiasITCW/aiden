@@ -31,6 +31,7 @@ import {
 } from 'discord.js'
 import { gateway } from '../gateway'
 import type { ChannelAdapter } from './adapter'
+import { noopLogger, type Logger } from '../v4/logger'
 
 export class DiscordAdapter implements ChannelAdapter {
   readonly name = 'discord'
@@ -40,6 +41,10 @@ export class DiscordAdapter implements ChannelAdapter {
   private allowedGuilds:   Set<string>
   private allowedChannels: Set<string>
   private healthy          = false
+  // Phase v4.1-1.3a — diagnostics route through the channel scope
+  // logger; ChannelManager.register injects it. Default noop keeps
+  // pre-attach calls silent.
+  private log:             Logger = noopLogger()
 
   constructor() {
     this.token           = process.env.DISCORD_BOT_TOKEN          ?? ''
@@ -49,11 +54,13 @@ export class DiscordAdapter implements ChannelAdapter {
     this.allowedChannels = rawChannels  ? new Set(rawChannels.split(',').map(s => s.trim()).filter(Boolean))  : new Set()
   }
 
+  attachLogger(logger: Logger): void { this.log = logger }
+
   // ── Lifecycle ──────────────────────────────────────────────
 
   async start(): Promise<void> {
     if (!this.token) {
-      console.log('[Discord] Disabled — set DISCORD_BOT_TOKEN to enable')
+      this.log.info('Disabled — set DISCORD_BOT_TOKEN to enable')
       return
     }
 
@@ -67,7 +74,7 @@ export class DiscordAdapter implements ChannelAdapter {
     })
 
     this.client.once(Events.ClientReady, async (c) => {
-      console.log(`[Discord] Connected as ${c.user.tag}`)
+      this.log.info(`Connected as ${c.user.tag}`)
       this.healthy = true
       // Register outbound delivery so gateway.deliver() and broadcast() work
       gateway.registerChannel('discord', async (msg) => {
@@ -75,7 +82,7 @@ export class DiscordAdapter implements ChannelAdapter {
       })
       // Register slash commands globally (takes ~1h to propagate on first run)
       await this.registerSlashCommands(c.user.id).catch((e: Error) =>
-        console.warn('[Discord] Slash command registration failed:', e.message),
+        this.log.warn(`Slash command registration failed: ${e.message}`),
       )
     })
 
@@ -88,7 +95,7 @@ export class DiscordAdapter implements ChannelAdapter {
 
       const response = await this.processMessage(message.channelId, message.author.id, message.content)
       await message.reply(response.substring(0, 2000)).catch((e: Error) =>
-        console.error('[Discord] Reply error:', e.message),
+        this.log.error(`Reply error: ${e.message}`),
       )
     })
 
@@ -114,7 +121,7 @@ export class DiscordAdapter implements ChannelAdapter {
         await interaction.deferReply()
         const response = await this.processMessage(channelId, userId, prompt)
         await interaction.editReply(response.substring(0, 2000)).catch((e: Error) =>
-          console.error('[Discord] editReply error:', e.message),
+          this.log.error(`editReply error: ${e.message}`),
         )
       } else if (interaction.commandName === 'aiden-help') {
         await interaction.reply({
@@ -127,7 +134,7 @@ export class DiscordAdapter implements ChannelAdapter {
     try {
       await this.client.login(this.token)
     } catch (e: any) {
-      console.error('[Discord] Login failed:', e.message)
+      this.log.error(`Login failed: ${e.message}`)
       this.healthy = false
     }
   }
@@ -139,7 +146,7 @@ export class DiscordAdapter implements ChannelAdapter {
       await this.client.destroy()
       this.client = null
     }
-    console.log('[Discord] Disconnected')
+    this.log.info('Disconnected')
   }
 
   async send(channelId: string, message: string): Promise<void> {
@@ -172,7 +179,7 @@ export class DiscordAdapter implements ChannelAdapter {
         timestamp: Date.now(),
       })
     } catch (e: any) {
-      console.error('[Discord] routeMessage error:', e.message)
+      this.log.error(`routeMessage error: ${e.message}`)
       return '❌ Something went wrong. Try again.'
     }
   }
@@ -186,7 +193,7 @@ export class DiscordAdapter implements ChannelAdapter {
       }
       return false
     } catch (e: any) {
-      console.error('[Discord] Delivery error:', e.message)
+      this.log.error(`Delivery error: ${e.message}`)
       return false
     }
   }
@@ -207,6 +214,6 @@ export class DiscordAdapter implements ChannelAdapter {
         .toJSON(),
     ]
     await rest.put(Routes.applicationCommands(appId), { body: commands })
-    console.log('[Discord] Slash commands registered globally')
+    this.log.info('Slash commands registered globally')
   }
 }

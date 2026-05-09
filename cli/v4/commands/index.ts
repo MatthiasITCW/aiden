@@ -38,6 +38,11 @@ import { license } from './license';
 import { doctor } from './doctor';
 import { cron } from './cron';
 import { setup } from './setup';
+import { channel } from './channel';
+import { voice } from './voice';
+import { status } from './status';
+import { show } from './show';
+import { history } from './history';
 
 export {
   help,
@@ -66,6 +71,11 @@ export {
   doctor,
   cron,
   setup,
+  channel,
+  voice,
+  status,
+  show,
+  history,
 };
 
 /** All built-in system commands, in canonical order. */
@@ -91,6 +101,11 @@ export const allCommands: SlashCommand[] = [
   doctor,
   cron,
   setup,
+  channel,
+  voice,
+  status,
+  show,
+  history,
   reloadMcp,
   reasoning,
   verbose,

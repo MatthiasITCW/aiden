@@ -21,10 +21,16 @@
 
 import type { AidenAgent } from '../../core/v4/aidenAgent';
 import type { Display } from './display';
+import { summarizeChannelState } from './display';
+import type { TelegramAdapter } from '../../core/channels/telegram';
 import type {
   CommandRegistry,
   ChatSessionLike,
+  SlashCommand,
 } from './commandRegistry';
+import { uiIconsEnabled, isNoUiMode } from './uiBuild';
+import aidenPrompt, { type SlashCommandLite } from './aidenPrompt';
+import { appendHistory, loadRecent } from './historyStore';
 import type { CliCallbacks } from './callbacks';
 import type { SessionManager } from '../../core/v4/sessionManager';
 import type { ContextCompressor } from '../../core/v4/contextCompressor';
@@ -48,6 +54,33 @@ import {
   isCompletePaste,
   hasPasteMarkers,
 } from './bracketedPaste';
+import { compressPaste } from './pasteCompression';
+import { installPasteInterceptor, expandPasteLabels } from './pasteIntercept';
+import { expand, hasInterpolation, countSpans } from './shellInterpolation';
+import { installResizeGuard } from './resizeGuard';
+
+/**
+ * Tier-3.1 helper: render a slash-command label honouring the
+ * `AIDEN_UI_ICONS` opt-in. Default OFF — emoji icons are gated to
+ * keep the dropdown ASCII-clean for terminals without good emoji
+ * support. `AIDEN_UI_ICONS=1` recovers the previous icon column.
+ */
+export function renderCommandLabel(cmd: SlashCommand): string {
+  return cmd.icon && uiIconsEnabled()
+    ? `${cmd.icon} /${cmd.name}`
+    : `/${cmd.name}`;
+}
+
+/** Aiden version pulled from package.json at require-time; falls back
+ *  to a static literal so TS compiles without a JSON resolution wobble. */
+const AIDEN_VERSION: string = (() => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return (require('../../package.json') as { version?: string }).version ?? '4.0.0';
+  } catch {
+    return '4.0.0';
+  }
+})();
 
 /** Lightweight readline / inquirer abstraction so tests can swap in stubs. */
 export interface ChatPromptApi {
@@ -130,6 +163,14 @@ export interface ChatSessionOptions {
    * stale model id from DEFAULT_CONFIG.
    */
   unconfigured?: boolean;
+
+  /**
+   * Phase v4.1-1.1 — live ChannelManager hosted by the CLI process.
+   * Threaded through to /channel slash commands so they can list,
+   * add, remove, and inspect adapters without HTTP-hopping to a
+   * separate API server.
+   */
+  channelManager?: import('../../core/channels/manager').ChannelManager;
 }
 
 const STATUS_BAR_WIDTH = 10;
@@ -236,7 +277,16 @@ export class ChatSession implements ChatSessionLike {
     }
 
     // 4. Main loop.
-    const promptApi = this.opts.promptApi ?? createDefaultPromptApi();
+    // Tier-3.1.1: feed the new aidenPrompt with live slash commands +
+    // recent history so ghost-text + dropdown work out of the box.
+    // The legacy inquirer path runs when `--no-ui` (AIDEN_NO_UI=1) is
+    // set or when a caller injects its own `promptApi`.
+    const promptApi =
+      this.opts.promptApi ??
+      createDefaultPromptApi({
+        commands:     this.opts.commandRegistry.list(),
+        loadHistory:  () => loadRecent(500),
+      });
     const max = this.opts.maxIterations ?? Number.POSITIVE_INFINITY;
     let iter = 0;
     // Phase 16: enable bracketed paste for the duration of the REPL when
@@ -247,6 +297,27 @@ export class ChatSession implements ChatSessionLike {
       stdout?.isTTY && !this.opts.promptApi
         ? enableBracketedPaste(stdout)
         : false;
+    // Tier-3.1a: install stdin pre-tap so bracketed paste payloads are
+    // captured and replaced with `[paste #N: …]` labels BEFORE inquirer
+    // sees them. Without this, modern @inquirer/prompts treats internal
+    // `\n` as Enter and auto-submits the first line of a multi-line paste.
+    // Tier-3.1c: install regardless of TTY status. Bracketed-paste
+    // sequences can arrive on a piped stdin too (CI harnesses, the
+    // runtime smoke), and the interceptor's wrap is a no-op on
+    // non-paste data — there's no cost to installing always. The
+    // promptApi opt-out remains so callers that supply their own
+    // input plumbing aren't surprised.
+    const restorePasteInterceptor =
+      this.opts.promptApi
+        ? (): void => { /* test prompt API: no interceptor */ }
+        : installPasteInterceptor(process.stdin);
+
+    // Tier-3-essentials: hard-clear the screen on terminal resize so
+    // dropdown re-renders + previous prompt frames don't ghost into
+    // the new viewport. No-op on non-TTY / MCP serve mode.
+    const restoreResizeGuard = this.opts.promptApi
+      ? (): void => { /* test prompt API: skip */ }
+      : installResizeGuard();
     try {
       while (iter < max) {
         iter += 1;
@@ -286,6 +357,7 @@ export class ChatSession implements ChatSessionLike {
             personalityManager: this.opts.personalityManager,
             agent: this.opts.agent,
             pluginLoader: this.opts.pluginLoader,
+            channelManager: this.opts.channelManager,
             confirm: async (msg: string) => {
               // Phase 17.1: bug — was reading `this.opts.promptApi?` which is
               // undefined when no override is passed; the chain silently
@@ -311,6 +383,8 @@ export class ChatSession implements ChatSessionLike {
     } finally {
       if (sigintHandler) process.off('SIGINT', sigintHandler);
       if (pasteEnabled) disableBracketedPaste(stdout);
+      restorePasteInterceptor();
+      restoreResizeGuard();
     }
   }
 
@@ -335,6 +409,9 @@ export class ChatSession implements ChatSessionLike {
     // Phase 22 Task 4: status bar reflects the live phase. Set on
     // entry, cleared in both success and error paths below.
     this.setStatusState({ kind: 'generating', sinceMs: Date.now() });
+    // Tier-3.1a: dim full-width rule between the user input echo and
+    // the agent reply for clean visual rhythm.
+    this.opts.display.write(`  ${this.opts.display.rule()}\n`);
     // Phase 26.2.3 — blank line between the user-input echo and the
     // spinner / response so the eye sees user → agent as separate
     // beats instead of butting together.
@@ -435,6 +512,9 @@ export class ChatSession implements ChatSessionLike {
 
       this.setStatusState({ kind: 'ready' });
       this.lastTurnElapsedMs = Date.now() - turnStartedAt;
+      // Tier-3.1a: dim full-width rule between the agent reply and the
+      // post-turn status footer.
+      this.opts.display.write(`  ${this.opts.display.rule()}\n`);
       this.renderStatusLine();
     } catch (err) {
       stopSpinnerOnce();
@@ -476,72 +556,127 @@ export class ChatSession implements ChatSessionLike {
   async renderStartupCard(): Promise<void> {
     const display = this.opts.display;
 
-    display.write('\n');
-    display.printBanner();
-    display.write(`  ${display.muted('Autonomous AI Engine')}\n`);
-    display.write('\n');
+    // Tier-3.1a: skip entirely on non-TTY so piped/scripted callers
+    // don't get scrollback chatter on stdout.
+    if (!process.stdout.isTTY) return;
 
-    // Detection
-    const toolsCount = this.opts.toolRegistry.list().length;
-    let skillsLoaded = 0;
-    try {
-      skillsLoaded = (await this.opts.skillLoader.list()).length;
-    } catch {
-      skillsLoaded = 0;
+    // Channel summary — observable, not banner-essential, but kept so
+    // status pills aren't the only place a user sees telegram health.
+    const cm = this.opts.channelManager;
+    if (cm) {
+      const adapterStatuses = cm.getStatus().map((s) => {
+        const adapter = cm.get(s.name);
+        const tg = adapter as (TelegramAdapter & {
+          getBotUsername?: () => string | null;
+          getState?:       () => 'inactive' | 'connecting' | 'active' | 'degraded' | 'conflict';
+        }) | undefined;
+        const botHandle =
+          typeof tg?.getBotUsername === 'function' ? tg.getBotUsername() : null;
+        const state =
+          typeof tg?.getState === 'function' ? tg.getState() : undefined;
+        return { id: s.name, healthy: s.healthy, botHandle, state };
+      });
+      void summarizeChannelState({ adapters: adapterStatuses });
+    } else {
+      void summarizeChannelState(null);
     }
 
-    // PIECE 1 — status pills row.
-    // Phase 30.2.1: in explore mode the model pill renders "not
-    // configured" instead of the DEFAULT_CONFIG fallback, so a fresh
-    // user who skipped the wizard isn't misled by a stale model name.
+    const cols = display.cols();
+    const isNarrow = cols < 60;
+    const showEnvCapBlock = cols >= 70;
+    const version = AIDEN_VERSION;
+
+    display.write('\n');
+
+    if (isNarrow) {
+      // Compact — single-line text logo + one-line capability summary.
+      display.write(`  ${display.brand('AIDEN')}  ${display.muted(`v${version}`)}\n`);
+      display.write(
+        `  ${display.muted('Local AI · controls your computer · never forgets')}\n`,
+      );
+    } else {
+      // Wide — full ASCII art + subtitle. Tier-3.1c: dropped the
+      // tagline + sponsor lines from the top section because they
+      // duplicate the credits already inside the scrollFooter at
+      // the bottom of the boot card. Subtitle stays — it's the only
+      // brand anchor between the ASCII art and the pills row.
+      display.printBanner(version);
+      display.write(`  ${display.muted('Autonomous AI Engine')}\n`);
+      display.write('\n');
+    }
+
+    // Status pills.
     display.write(
       display.statusPillsRow({
-        coreOnline: true,
-        mode: 'auto',
-        model: this.currentModelId,
+        coreOnline:   true,
+        mode:         'auto',
+        model:        this.currentModelId,
         memoryActive: true,
-        providerOk: !this.opts.unconfigured,
+        providerOk:   !this.opts.unconfigured,
       }) + '\n',
     );
-    display.write(`  ${display.rule()}\n`);
-    display.write('\n');
 
-    // PIECE 2 — Environment + Capabilities block.
-    display.write(
-      display.twoColumnBlock(
-        {
-          title: 'Environment',
-          rows: [
-            { key: 'OS', value: detectOS() },
-            { key: 'shell', value: detectShell() },
-            { key: 'runtime', value: 'local-first' },
-            { key: 'tools', value: `${toolsCount} loaded` },
-            { key: 'skills', value: `${skillsLoaded} loaded` },
-          ],
-        },
-        {
-          title: 'Capabilities',
-          rows: [
-            { key: 'web', value: 'research · extract' },
-            { key: 'browser', value: 'navigate · automate' },
-            { key: 'files', value: 'read · patch · organize' },
-            { key: 'execution', value: 'shell · code · workflows' },
-            { key: 'memory', value: 'persistent recall' },
-          ],
-        },
-      ) + '\n',
-    );
-    display.write('\n');
+    // Tier-3.1b: rule + environment/capabilities block + rule + scroll
+    // + bottom prompt hint. Skipped at <70 cols to keep the narrow
+    // boot card from wrapping into noise.
     display.write(`  ${display.rule()}\n`);
-    display.write('\n');
 
-    // PIECE 3 — scroll footer with credits.
+    if (showEnvCapBlock) {
+      // Detect environment lazily (cheap on every boot — no caching
+      // needed; tools/skills counts are already loaded by this point).
+      const toolsCount = this.opts.toolRegistry.list().length;
+      let skillsLoaded = 0;
+      try {
+        skillsLoaded = (await this.opts.skillLoader.list()).length;
+      } catch {
+        skillsLoaded = 0;
+      }
+
+      display.write('\n');
+      // Pass sideBySideThreshold=120 so 70-119 cols stack vertically
+      // (per the tier3.1b dispatch's width-tier policy) and only
+      // ≥120 renders the full side-by-side block.
+      display.write(
+        display.twoColumnBlock(
+          {
+            title: 'Environment',
+            rows:  [
+              { key: 'OS',       value: detectOS() },
+              { key: 'shell',    value: detectShell() },
+              { key: 'runtime',  value: 'local-first' },
+              { key: 'tools',    value: `${toolsCount} loaded` },
+              { key: 'skills',   value: `${skillsLoaded} loaded` },
+            ],
+          },
+          {
+            title: 'Capabilities',
+            rows:  [
+              { key: 'web',       value: 'research · extract' },
+              { key: 'browser',   value: 'navigate · automate' },
+              { key: 'files',     value: 'read · patch · organize' },
+              { key: 'execution', value: 'shell · code · workflows' },
+              { key: 'memory',    value: 'persistent recall' },
+            ],
+          },
+          // Tier-3.1c: lowered from 120 → 100 so wide-but-not-huge
+          // terminals (laptop screens, default Windows Terminal) get
+          // the side-by-side block instead of the stacked fallback.
+          // Each column at ~38 chars + 4-char separator + 2-char
+          // indent fits in 82 chars; 100 leaves 18 chars headroom.
+          { sideBySideThreshold: 100 },
+        ) + '\n',
+      );
+      display.write('\n');
+      display.write(`  ${display.rule()}\n`);
+      display.write('\n');
+    }
+
+    // Scroll footer (parchment at ≥80 cols, single-line credits below).
     display.write(display.scrollFooter() + '\n');
-    display.write('\n');
 
-    // PIECE 4 — bottom prompt hint.
-    display.write(display.bottomPromptHint() + '\n');
+    // Bottom prompt hint — final line of the boot card.
     display.write('\n');
+    display.write(display.bottomPromptHint() + '\n');
   }
 
   /** Phase 22 Task 4: state transitions for the right-most segment. */
@@ -597,13 +732,19 @@ export class ChatSession implements ChatSessionLike {
     let raw = await api.readLine(promptText);
     if (raw == null) return '';
 
-    // Bracketed paste polish (Phase 16): if the terminal sent paste markers,
-    // strip them and accept the entire payload as one message. This replaces
-    // Phase 15's timing heuristic when the terminal supports CSI 2004; the
-    // timing fallback remains for older Console hosts that don't.
+    // Tier-3.1a: stdin pre-tap (pasteIntercept) already converted any
+    // bracketed-paste payload into a `[paste #N: …]` label before
+    // inquirer saw it. Swap the label back for the original here so
+    // the agent receives full content. User-typed labels with unknown
+    // ids are left untouched.
+    raw = expandPasteLabels(raw);
+
+    // Bracketed paste polish (Phase 16): if the terminal still sent
+    // paste markers (interceptor disabled — non-TTY or test promptApi),
+    // strip them and accept the entire payload as one message.
     if (hasPasteMarkers(raw)) {
       const stripped = stripPasteMarkers(raw).replace(/\r/g, '');
-      if (isCompletePaste(raw)) return stripped;
+      if (isCompletePaste(raw)) return await this.maybeCompressVisiblePaste(stripped);
       // Unterminated paste — still return the stripped content so the user
       // doesn't see escape sequences in their prompt.
       raw = stripped;
@@ -616,7 +757,7 @@ export class ChatSession implements ChatSessionLike {
       const inline = raw.slice(3);
       // Single-line `"""hello"""` shortcut.
       if (inline.endsWith('"""')) {
-        return inline.slice(0, -3);
+        return await this.maybeCompressVisiblePaste(inline.slice(0, -3));
       }
       const buffer: string[] = [inline];
       while (true) {
@@ -628,14 +769,23 @@ export class ChatSession implements ChatSessionLike {
         }
         buffer.push(next);
       }
-      return buffer.join('\n').trim();
+      return await this.maybeCompressVisiblePaste(buffer.join('\n').trim());
     }
 
-    // Paste detection: multiple lines arrived in a single chunk. Accept verbatim.
+    // Paste detection: multiple lines arrived in a single chunk. The
+    // interceptor + expandPasteLabels path already produced the original
+    // text — no extra echo needed since the user saw the `[paste #N: …]`
+    // label in the input buffer. Pass the original through unchanged.
     if (raw.includes('\n')) return raw;
 
-    // Slash command: invoke the autocomplete dropdown if registry has matches.
-    if (raw.startsWith('/')) {
+    // Slash command: invoke the legacy autocomplete dropdown only
+    // when --no-ui (AIDEN_NO_UI=1) is set. The new aidenPrompt
+    // handles the dropdown inline as the user types, so re-opening
+    // a second prompt here would double-prompt — once in
+    // aidenPrompt, once in inq.search. Tier-3.1.1 routes everything
+    // through aidenPrompt unless the legacy path is explicitly
+    // requested.
+    if (isNoUiMode() && raw.startsWith('/')) {
       const matches = this.opts.commandRegistry.filter(raw);
       if (matches.length > 1) {
         try {
@@ -644,7 +794,7 @@ export class ChatSession implements ChatSessionLike {
             return this.opts.commandRegistry
               .filter(filterStr)
               .map((cmd) => ({
-                name: cmd.icon ? `${cmd.icon} /${cmd.name}` : `/${cmd.name}`,
+                name: renderCommandLabel(cmd),
                 value: `/${cmd.name}`,
                 description: cmd.description,
               }));
@@ -656,7 +806,47 @@ export class ChatSession implements ChatSessionLike {
       }
     }
 
+    // Tier-3-essentials: inline shell interpolation. If the prompt
+    // contains `{!cmd}` spans, run each in parallel (5s timeout per
+    // span, 500-char output cap) and splice the output back in. The
+    // rewritten prompt is what reaches the agent — visible feedback
+    // is a single dim line so the user sees that the work happened.
+    if (hasInterpolation(raw)) {
+      const spans = countSpans(raw);
+      this.opts.display.dim(`[shell] running ${spans} interpolation${spans === 1 ? '' : 's'}…`);
+      try {
+        raw = await expand(raw);
+      } catch {
+        // expand() never rejects, but defence-in-depth.
+      }
+    }
+
     return raw;
+  }
+
+  /**
+   * Tier-3.1: when a paste is large (>5 lines OR >500 chars), echo a
+   * compact `[paste #<id>: …]` label to the user and persist the
+   * original to disk so `/show <id>` can recall it later. The agent
+   * still receives the full original text — only the visible echo is
+   * compressed.
+   *
+   * MCP serve mode never reaches this path (REPL doesn't run there),
+   * so the display.write here is safe.
+   */
+  private async maybeCompressVisiblePaste(text: string): Promise<string> {
+    try {
+      const result = await compressPaste(text);
+      if (result.compressed && result.label) {
+        // Echo the label only — newline-terminated for cleanliness.
+        this.opts.display.write(`  ${this.opts.display.muted(result.label)}\n`);
+      }
+    } catch {
+      // Paste compression is a polish feature; if disk write fails we
+      // silently fall through to the original text rather than crash
+      // the prompt loop.
+    }
+    return text;
   }
 }
 
@@ -859,7 +1049,12 @@ export function formatDuration(ms: number): string {
   return remMin > 0 ? `${hr}h${remMin}m` : `${hr}h`;
 }
 
-function createDefaultPromptApi(): ChatPromptApi {
+interface DefaultPromptOpts {
+  commands?:    SlashCommandLite[];
+  loadHistory?: () => Promise<string[]>;
+}
+
+function createDefaultPromptApi(opts: DefaultPromptOpts = {}): ChatPromptApi {
   // Lazy-load @inquirer/prompts so test harnesses without a TTY don't break.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const inq = require('@inquirer/prompts');
@@ -868,10 +1063,36 @@ function createDefaultPromptApi(): ChatPromptApi {
   // shows alone.  We pass per-status entries so the answered echo also
   // stays clean; `loading` is intentionally untouched (spinner state).
   const promptTheme = { prefix: { idle: '', done: '' } };
+
+  // Tier-3.1.1: when `--no-ui` (AIDEN_NO_UI=1) is set, fall back to
+  // the legacy inquirer prompt path. Otherwise use the new
+  // aidenPrompt component (ghost text + slash dropdown + history nav).
+  const useLegacyPrompt = isNoUiMode() || !opts.commands;
+
   return {
     async readLine(prompt) {
       try {
-        return (await inq.input({ message: prompt, theme: promptTheme })) ?? '';
+        if (useLegacyPrompt) {
+          return (await inq.input({ message: prompt, theme: promptTheme })) ?? '';
+        }
+        // Fetch history just-in-time so each read sees the latest
+        // (the user's previous turn was just appended).
+        const history = opts.loadHistory ? await opts.loadHistory() : [];
+        const value = await aidenPrompt({
+          message:  prompt,
+          commands: opts.commands ?? [],
+          history,
+          theme:    promptTheme as never,
+        });
+        const trimmed = (value ?? '').trim();
+        // Append to disk history. Awaited so the write flushes before
+        // the agent loop progresses — `/quit` exits the process and
+        // a fire-and-forget write would race the exit. The latency
+        // on a single appended line is negligible (~ms).
+        if (trimmed.length > 0) {
+          try { await appendHistory(trimmed); } catch { /* best-effort */ }
+        }
+        return value ?? '';
       } catch (err) {
         // Inquirer wraps Ctrl+C as ExitPromptError. Re-throw as plain Error
         // with a recognisable message so the REPL can break the loop.
@@ -880,6 +1101,10 @@ function createDefaultPromptApi(): ChatPromptApi {
       }
     },
     async selectSlashCommand(source) {
+      // Tier-3.1.1: aidenPrompt handles the slash dropdown inline so
+      // this hook is rarely invoked. The legacy path stays available
+      // for `--no-ui` callers + any external promptApi shim that
+      // doesn't wrap aidenPrompt directly.
       try {
         return (await inq.search({ message: '/', source, theme: promptTheme })) as string;
       } catch {

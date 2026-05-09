@@ -22,10 +22,14 @@
 import axios from 'axios'
 import { gateway } from '../gateway'
 import type { ChannelAdapter } from './adapter'
+import { noopLogger, type Logger } from '../v4/logger'
 
 export class SignalAdapter implements ChannelAdapter {
   readonly name = 'signal'
 
+
+  // Phase v4.1-1.3a — diagnostics route through scope logger.
+  private log: Logger = noopLogger()
   private healthy          = false
   private baseUrl:  string
   private myNumber: string
@@ -40,24 +44,26 @@ export class SignalAdapter implements ChannelAdapter {
     this.allowedNumbers = raw ? new Set(raw.split(',').map(s => s.trim()).filter(Boolean)) : new Set()
   }
 
+  attachLogger(logger: Logger): void { this.log = logger }
+
   // ── Lifecycle ──────────────────────────────────────────────
 
   async start(): Promise<void> {
     if (!this.myNumber) {
-      console.log('[Signal] Disabled — set SIGNAL_PHONE_NUMBER to enable')
+      this.log.info('Disabled — set SIGNAL_PHONE_NUMBER to enable')
       return
     }
 
     // Verify signal-cli is reachable
     const reachable = await this.checkHealth()
     if (!reachable) {
-      console.log(`[Signal] Disabled — signal-cli-rest-api not reachable at ${this.baseUrl}`)
+      this.log.info('Disabled — signal-cli-rest-api not reachable at ${this.baseUrl}')
       return
     }
 
     this.healthy = true
     this.lastReceived = Date.now()
-    console.log(`[Signal] Connected — polling ${this.baseUrl}`)
+    this.log.info('Connected — polling ${this.baseUrl}')
 
     // Register outbound delivery
     gateway.registerChannel('signal', async (msg) => {
@@ -76,7 +82,7 @@ export class SignalAdapter implements ChannelAdapter {
       this.pollTimer = null
     }
     gateway.unregisterChannel('signal')
-    console.log('[Signal] Disconnected')
+    this.log.info('Disconnected')
   }
 
   async send(target: string, message: string): Promise<void> {
@@ -88,7 +94,7 @@ export class SignalAdapter implements ChannelAdapter {
         { timeout: 10000 },
       )
     } catch (e: any) {
-      console.error('[Signal] send error:', e.message)
+      this.log.error(`send error:${e.message}`)
     }
   }
 
@@ -129,7 +135,7 @@ export class SignalAdapter implements ChannelAdapter {
     } catch (e: any) {
       // Don't spam logs on transient poll errors
       if (this.healthy) {
-        console.error('[Signal] poll error:', e.message)
+        this.log.error(`poll error:${e.message}`)
       }
     }
   }
@@ -149,7 +155,7 @@ export class SignalAdapter implements ChannelAdapter {
         timestamp: Date.now(),
       })
     } catch (e: any) {
-      console.error('[Signal] routeMessage error:', e.message)
+      this.log.error(`routeMessage error:${e.message}`)
       return '❌ Something went wrong. Try again.'
     }
   }

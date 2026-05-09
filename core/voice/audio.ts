@@ -100,14 +100,27 @@ Write-Output "${outputPath}"
 
 async function _recordUnix(outputPath: string, durationMs: number): Promise<string> {
   const seconds = Math.ceil(durationMs / 1000)
+  // Phase v4.1-cross-platform: detect available backend up-front so
+  // a missing sox/arecord surfaces a friendly install hint instead of
+  // a raw spawn-failure stack trace.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { detectBackend, missingBackendMessage } = require('./audioBackend')
+  const backend = detectBackend('record')
+  if (!backend) {
+    throw new Error(`[Audio] ${missingBackendMessage('record')}`)
+  }
   // Try sox first, then arecord
   try {
     await execAsync(`sox -d -t wav "${outputPath}" trim 0 ${seconds}`, { timeout: durationMs + 5_000 })
   } catch {
-    await execAsync(
-      `arecord -d ${seconds} -f S16_LE -r 16000 -c 1 "${outputPath}"`,
-      { timeout: durationMs + 5_000 },
-    )
+    try {
+      await execAsync(
+        `arecord -d ${seconds} -f S16_LE -r 16000 -c 1 "${outputPath}"`,
+        { timeout: durationMs + 5_000 },
+      )
+    } catch {
+      throw new Error(`[Audio] ${missingBackendMessage('record')}`)
+    }
   }
   return outputPath
 }
@@ -152,25 +165,63 @@ export async function playAudio(audioSource: string | Buffer): Promise<void> {
 }
 
 async function _playWindows(filePath: string): Promise<void> {
+  // Phase v4.1-voice-cli (Piece 0) — replaced the hard-coded
+  // `Start-Sleep -Seconds 10` with a NaturalDuration poll loop. The
+  // old code cut off any TTS reply longer than 10s mid-sentence;
+  // voice-mode replies of meaningful length need actual completion
+  // tracking. MediaPlayer.Open is async — we wait up to 5s for
+  // NaturalDuration to populate, then sleep the actual duration
+  // (capped at 5min as a runaway guard). The 10s fallback is
+  // preserved when NaturalDuration never resolves (codec issues,
+  // streaming sources).
   const escaped = filePath.replace(/\\/g, '\\\\')
+  const psBody = [
+    'Add-Type -AssemblyName presentationCore',
+    '$mp = New-Object System.Windows.Media.MediaPlayer',
+    `$mp.Open([uri]'${escaped}')`,
+    '$wait = 0',
+    'while (-not $mp.NaturalDuration.HasTimeSpan -and $wait -lt 50) { Start-Sleep -Milliseconds 100; $wait++ }',
+    '$mp.Play()',
+    'if ($mp.NaturalDuration.HasTimeSpan) {',
+    '  $secs = [Math]::Min(300, [Math]::Ceiling($mp.NaturalDuration.TimeSpan.TotalSeconds + 0.5))',
+    '  Start-Sleep -Seconds ([int]$secs)',
+    '} else { Start-Sleep -Seconds 10 }',
+    '$mp.Stop()',
+    '$mp.Close()',
+  ].join('; ')
   await execAsync(
-    `powershell -Command "Add-Type -AssemblyName presentationCore; $mp = New-Object System.Windows.Media.MediaPlayer; $mp.Open([uri]'${escaped}'); $mp.Play(); Start-Sleep -Seconds 10; $mp.Stop(); $mp.Close()"`,
-    { timeout: 30_000 },
+    `powershell -Command "${psBody}"`,
+    // 5 min cap on the duration poll + a generous teardown margin.
+    { timeout: 320_000 },
   ).catch(async () => {
-    // Fallback: system default media player
+    // Fallback: system default media player (fire-and-forget — caller
+    // doesn't wait for completion, but at least audio plays).
     await execAsync(`powershell -Command "Start-Process '${escaped}'"`, { timeout: 5_000 })
       .catch(() => { /* ignore */ })
   })
 }
 
 async function _playUnix(filePath: string): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { detectBackend, missingBackendMessage } = require('./audioBackend')
   if (process.platform === 'darwin') {
-    await execAsync(`afplay "${filePath}"`, { timeout: 30_000 })
+    try {
+      await execAsync(`afplay "${filePath}"`, { timeout: 30_000 })
+    } catch {
+      throw new Error(`[Audio] ${missingBackendMessage('playback')}`)
+    }
   } else {
+    // Linux — try paplay then aplay, surface friendly error if both fail.
+    const backend = detectBackend('playback')
+    if (!backend) throw new Error(`[Audio] ${missingBackendMessage('playback')}`)
     try {
       await execAsync(`paplay "${filePath}"`, { timeout: 30_000 })
     } catch {
-      await execAsync(`aplay "${filePath}"`, { timeout: 30_000 })
+      try {
+        await execAsync(`aplay "${filePath}"`, { timeout: 30_000 })
+      } catch {
+        throw new Error(`[Audio] ${missingBackendMessage('playback')}`)
+      }
     }
   }
 }

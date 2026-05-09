@@ -16,7 +16,7 @@ export const compress: SlashCommand = {
   name: 'compress',
   description: 'Summarise older history to free up context.',
   category: 'system',
-  icon: '📦',
+  icon: '#',
   handler: async (ctx) => {
     if (!ctx.compressor || !ctx.session) {
       ctx.display.warn('Compressor or session not wired.');

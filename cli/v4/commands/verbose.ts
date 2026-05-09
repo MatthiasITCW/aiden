@@ -23,7 +23,7 @@ export const verbose: SlashCommand = {
   name: 'verbose',
   description: 'Set verbosity: compact | normal | verbose.',
   category: 'system',
-  icon: '🔎',
+  icon: '~',
   handler: async (ctx) => {
     const cfg = ctx.config;
     if (!cfg) {

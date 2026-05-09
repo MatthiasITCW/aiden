@@ -35,8 +35,22 @@ export async function writeJsonAtomic(
 }
 
 async function doWrite(filePath: string, data: unknown): Promise<void> {
-  const dir     = path.dirname(filePath)
-  const baseTmp = `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
+  // Phase v4.1-cron — symlink-aware rename. If the destination
+  // path is a symlink (e.g. cron_jobs.json points at a file in a
+  // shared directory), naive `fs.rename` *replaces* the symlink with
+  // a regular file, detaching it from the link target. Resolve the
+  // symlink first so the rename lands on the actual target. When the
+  // path is NOT a symlink (or doesn't exist yet), `realpath` returns
+  // the path itself or throws ENOENT — both safe to fall through.
+  let resolvedPath = filePath
+  try {
+    resolvedPath = await fsp.realpath(filePath)
+  } catch {
+    // ENOENT (file doesn't exist yet) or non-symlink — use original.
+  }
+
+  const dir     = path.dirname(resolvedPath)
+  const baseTmp = `.${path.basename(resolvedPath)}.${process.pid}.${Date.now()}.tmp`
   const tmpPath = path.join(dir, baseTmp)
 
   await fsp.mkdir(dir, { recursive: true })
@@ -53,7 +67,7 @@ async function doWrite(filePath: string, data: unknown): Promise<void> {
   }
 
   try {
-    await fsp.rename(tmpPath, filePath)
+    await fsp.rename(tmpPath, resolvedPath)
   } catch (err) {
     // rename failed — clean up the orphan temp file before re-raising.
     try { await fsp.unlink(tmpPath) } catch { /* nothing more we can do */ }
@@ -61,7 +75,7 @@ async function doWrite(filePath: string, data: unknown): Promise<void> {
   }
 
   // Owner-only access. Best-effort: NTFS may refuse but we try anyway.
-  try { await fsp.chmod(filePath, 0o600) } catch { /* windows / non-POSIX */ }
+  try { await fsp.chmod(resolvedPath, 0o600) } catch { /* windows / non-POSIX */ }
 }
 
 // Test hook — drains queued writes so tests can assert on disk state.

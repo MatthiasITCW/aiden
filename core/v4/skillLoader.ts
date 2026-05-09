@@ -109,14 +109,29 @@ export class SkillLoader {
   }
 
   async load(name: string): Promise<ParsedSkill | null> {
-    // Honour the cache when available so we don't re-walk for a
-    // single-skill lookup. Falls through to disk on a miss so newly
-    // dropped skills still resolve in long-running processes (the cache
-    // never sees them otherwise — that's the whole point of `invalidate`).
+    // Phase v4.1-cross-platform: case-insensitive cache lookup so a
+    // skill registered as `WebSearch` resolves the same on Linux
+    // (case-sensitive FS) as on Windows (case-insensitive FS). The
+    // ON-DISK directory name still has to match in case for the
+    // disk-fallback path to work, so we ALSO loadAll first when the
+    // case-insensitive cache hit succeeds — that gives us the actual
+    // file-system path and the loader can serve it from cache.
+    const target = name.toLowerCase();
+    if (!this.cache) {
+      // Trigger a one-time scan so case-insensitive lookup has data.
+      try { await this.loadAll(); } catch { /* ignore — fall through to disk */ }
+    }
     if (this.cache) {
-      const hit = this.cache.find((s) => s.frontmatter.name === name);
+      const hit = this.cache.find((s) =>
+        (s.frontmatter.name ?? '').toLowerCase() === target,
+      );
       if (hit) return hit;
     }
+    // Disk fallback: try the verbatim name, then a lowercase variant
+    // (covers case where the cache failed to populate but the on-disk
+    // dir uses lowercase). On case-sensitive filesystems neither will
+    // hit if the directory case doesn't match the requested name —
+    // that's fine, the cache lookup above is the authoritative path.
     const dirSkill = path.join(this.paths.skillsDir, name, 'SKILL.md');
     const fileSkill = path.join(this.paths.skillsDir, `${name}.md`);
     return (await this.tryParse(dirSkill)) ?? (await this.tryParse(fileSkill));

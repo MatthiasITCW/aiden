@@ -380,8 +380,8 @@ describe('SetupWizard', () => {
 
     it('renders a rounded box with the Setup Complete title', () => {
       const out = captureTutorial();
-      expect(out).toMatch(/╭── Setup Complete /);
-      expect(out).toMatch(/╰─+╯/);
+      expect(out).toMatch(/┌── Setup Complete /);
+      expect(out).toMatch(/└─+┘/);
     });
 
     it('shows the platform-aware aiden home path', () => {
@@ -412,7 +412,7 @@ describe('SetupWizard', () => {
     it('closes with the "Try: aiden" CTA below the box', () => {
       const out = captureTutorial();
       // CTA appears AFTER the closing border.
-      const closeIdx = out.lastIndexOf('╯');
+      const closeIdx = out.lastIndexOf('┘');
       expect(closeIdx).toBeGreaterThan(0);
       expect(out.slice(closeIdx)).toMatch(/Try: aiden/);
     });

@@ -37,6 +37,10 @@ import { Display } from './display';
 import { SkinEngine } from './skinEngine';
 import { CommandRegistry } from './commandRegistry';
 import { CliCallbacks } from './callbacks';
+// Tier-3.1 (v4.1-tier3.1) — re-export the build fingerprint so the
+// runtime smoke can find it in the bundled artifact.
+import { AIDEN_UI_BUILD } from './uiBuild';
+export { AIDEN_UI_BUILD };
 import { runSetupWizard, isFreshInstall } from './setupWizard';
 import { runDoctorCli } from './doctor';
 import { runModelPicker } from './commands/modelPicker';
@@ -53,6 +57,10 @@ import { SessionStore } from '../../core/v4/sessionStore';
 import { SessionManager } from '../../core/v4/sessionManager';
 import { ToolRegistry } from '../../core/v4/toolRegistry';
 import { SkillLoader } from '../../core/v4/skillLoader';
+import { makeSubagentFanoutTool } from '../../tools/v4/index';
+import type { ProviderOption } from '../../core/v4/subagent/providerRotation';
+import type { RunChildArgs } from '../../core/v4/subagent/fanout';
+import type { Message as ProviderMessage } from '../../providers/v4/types';
 import { SkillCommands } from '../../core/v4/skillCommands';
 import { AidenAgent } from '../../core/v4/aidenAgent';
 import { PromptBuilder } from '../../core/v4/promptBuilder';
@@ -73,6 +81,9 @@ import {
   SkillTeacher,
   type SkillTeacherTier,
 } from '../../moat/skillTeacher';
+import { SkillMiner } from '../../core/v4/skillMining/skillMiner';
+import type { MinedCandidate } from '../../core/v4/skillMining/candidateStore';
+import { isMcpServeMode } from './uiBuild';
 import { MemoryGuard } from '../../moat/memoryGuard';
 import { SSRFProtection } from '../../moat/ssrfProtection';
 import { TirithScanner } from '../../moat/tirithScanner';
@@ -80,6 +91,7 @@ import { TirithScanner } from '../../moat/tirithScanner';
 import { CredentialResolver } from '../../providers/v4/credentialResolver';
 import { RuntimeResolver } from '../../providers/v4/runtimeResolver';
 import { ChatCompletionsAdapter } from '../../providers/v4/chatCompletionsAdapter';
+import { findModel } from '../../providers/v4/modelCatalog';
 import {
   FallbackAdapter,
   buildDefaultSlots,
@@ -101,6 +113,17 @@ import {
   formatPluginBootCard,
 } from '../../core/v4/plugins';
 import { OAuthProviderRegistry } from '../../core/v4/auth/providerAuth';
+
+// Phase v4.1-1.1 — CLI-side ChannelManager. The same singleton lives in
+// the API server process; in a CLI-only session we host it here so
+// /channel commands operate without a separate server. When `aiden serve`
+// runs in the SAME process tree on the same machine, polling-based
+// adapters (Telegram) must only be started in one of the two — we
+// gate startup on a heuristic below to avoid 409 polling-conflict.
+import { ChannelManager } from '../../core/channels/manager';
+import { TelegramAdapter } from '../../core/channels/telegram';
+import { gateway } from '../../core/gateway';
+import { createBootLogger } from '../../core/v4/logger';
 
 import { registerAllTools } from '../../tools/v4';
 import { setupMcpFromConfig } from '../../tools/v4/mcpSetup';
@@ -228,13 +251,44 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
       '--skill-teacher <tier>',
       'SkillTeacher tier: off | tier_3_propose | tier_4_auto',
     )
+    .option(
+      '--no-ui',
+      'Disable Tier-3 UI polish (autosuggest ghost text, inline status line); fall back to legacy rendering',
+    )
     .action(async () => {
+      // Tier-3.1: argv discipline. If positional args were passed but
+      // no subcommand matched, error to stderr and exit non-zero
+      // rather than silently booting the REPL — a typo'd subcommand
+      // otherwise produces a hung foreground.
+      const leftover = program.args ?? [];
+      if (leftover.length > 0) {
+        process.stderr.write(`error: unknown command "${leftover[0]}"\n`);
+        process.stderr.write(`Run 'aiden --help' for available commands.\n`);
+        process.exit(2);
+      }
+
+      // Tier-3.1: surface --no-ui as an env var so downstream modules
+      // (which import uiBuild.ts) see the flag without threading it
+      // through every call site.
+      const o = program.opts() as { ui?: boolean };
+      if (o.ui === false) process.env.AIDEN_NO_UI = '1';
       const cliOpts = program.opts();
       if (opts.runChatHook) {
         await opts.runChatHook(cliOpts);
         return;
       }
       await runInteractiveChat(cliOpts, opts);
+    });
+
+  // Tier-3.1: hidden one-shot — emits the UI build fingerprint and
+  // exits. Used by the runtime smoke to verify the bundled artifact
+  // matches the expected sub-phase without parsing other output.
+  program
+    .command('print-ui-build', { hidden: true })
+    .description('Print the v4.1 tier-3 UI build fingerprint and exit.')
+    .action(() => {
+      process.stdout.write(`${AIDEN_UI_BUILD}\n`);
+      process.exit(0);
     });
 
   program
@@ -305,18 +359,92 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
 
   program
     .command('mcp <action>')
-    .description('Manage MCP servers (full impl deferred to v4.1 with the gateway).')
+    .description(
+      'MCP server mode (Phase v4.1-mcp). Actions: serve, status, tools.',
+    )
     .action(async (action: string) => {
       if (opts.runMcpHook) {
         await opts.runMcpHook(action);
         return;
       }
-      const out = opts.writeOut ?? ((t) => process.stdout.write(t));
-      out(`'aiden mcp ${action}' is deferred to v4.1 alongside the gateway.\n`);
+      // Lazy-load so the rest of the CLI does not pay the import cost
+      // for `setup`, `doctor`, `model`, etc. on every invocation.
+      const { runMcpSubcommand } = await import('./commands/mcp');
+      const code = await runMcpSubcommand(action, {
+        writeOut: opts.writeOut,
+        writeErr: (t: string) => process.stderr.write(t),
+      });
+      if (code !== 0) process.exit(code);
+    });
+
+  program
+    .command('voice [args...]')
+    .description(
+      'Voice diagnostics + one-shot TTS / transcribe (Phase v4.1-voice-cli). ' +
+      'Usage: aiden voice doctor | tts "<text>" | transcribe <file>',
+    )
+    .allowUnknownOption()
+    .action(async (args: string[]) => {
+      const { runVoiceSubcommand } = await import('./voiceCli');
+      const action = (args[0] ?? 'doctor').toLowerCase();
+      const rest = args.slice(1);
+      const code = await runVoiceSubcommand(action, rest, {
+        writeOut: opts.writeOut,
+        writeErr: (t: string) => process.stderr.write(t),
+      });
+      if (code !== 0) process.exit(code);
+    });
+
+  program
+    .command('subagent <action>')
+    .description(
+      'Subagent fanout diagnostics (Phase v4.1-subagent). Actions: status, tools.',
+    )
+    .action(async (action: string) => {
+      const { runSubagentSubcommand } = await import('./commands/subagent');
+      const code = await runSubagentSubcommand(action, {
+        writeOut: opts.writeOut,
+        writeErr: (t: string) => process.stderr.write(t),
+      });
+      if (code !== 0) process.exit(code);
+    });
+
+  program
+    .command('fanout [args...]')
+    .description(
+      'Run a parallel agent fanout (Phase v4.1-subagent). ' +
+      'Usage: aiden fanout "<query>" --n=3 --merge=combine [--mode=ensemble] [--dry-run]',
+    )
+    .allowUnknownOption()
+    .action(async (args: string[]) => {
+      const { runFanoutCli } = await import('./commands/fanout');
+      const code = await runFanoutCli(args, {
+        writeOut: opts.writeOut,
+        writeErr: (t: string) => process.stderr.write(t),
+      });
+      if (code !== 0) process.exit(code);
     });
 
   // v4.1 placeholders. (`tui` graduated to a real flag in Phase 15.)
-  for (const cmd of ['batch', 'gateway', 'cron', 'pairing', 'update']) {
+  program
+    .command('cron [args...]')
+    .description(
+      'Cron diagnostics + one-shot list / run (Phase v4.1 hardened cron). ' +
+      'Usage: aiden cron status | list | run <id>',
+    )
+    .allowUnknownOption()
+    .action(async (args: string[]) => {
+      const { runCronSubcommand } = await import('./cronCli');
+      const action = (args[0] ?? 'status').toLowerCase();
+      const rest = args.slice(1);
+      const code = await runCronSubcommand(action, rest, {
+        writeOut: opts.writeOut,
+        writeErr: (t: string) => process.stderr.write(t),
+      });
+      if (code !== 0) process.exit(code);
+    });
+
+  for (const cmd of ['batch', 'gateway', 'pairing', 'update']) {
     program
       .command(cmd)
       .description(`(deferred to v4.1)`)
@@ -891,6 +1019,15 @@ export async function buildAgentRuntime(
     modelId,
   };
 
+  // ── Phase v4.1-skill-mining ──────────────────────────────────────────
+  // Construct the miner once — it owns its in-memory session counter +
+  // CandidateStore handle. Skipped entirely in MCP serve mode (the
+  // serve binary doesn't run the agent loop the same way and shouldn't
+  // mutate skill state from inside JSON-RPC handling).
+  const skillMiner = isMcpServeMode()
+    ? undefined
+    : new SkillMiner({ auxiliaryClient });
+
   // ── Build agent with all moat layers attached ────────────────────────
   const agent = new AidenAgent({
     provider: adapter,
@@ -901,6 +1038,12 @@ export async function buildAgentRuntime(
     plannerGuard,
     honestyEnforcement,
     skillTeacher,
+    skillMiner,
+    onSkillCandidate: (candidate: MinedCandidate) => {
+      try {
+        callbacks.onSkillCandidate?.(candidate);
+      } catch { /* notification must not break the turn */ }
+    },
     // Phase 23.5: tool event rows. CliCallbacks.onToolCall
     // emits a single line per call — `· tool <name> <args> [running]`
     // mutates to `[ok 220ms]` / `[fail 1.4s]` / `[blocked]` on resolve.
@@ -952,6 +1095,250 @@ export async function buildAgentRuntime(
     agent.markMemoryDirty(file === 'user' ? 'user' : 'memory');
   });
 
+  // ── Phase v4.1-subagent.1 — subagent_fanout wiring is below
+  // (after `bootLogger` is declared and the gateway processor is set
+  // up). Stub registered at boot is replaced there with the real
+  // closures over adapter / sessionManager / promptBuilder / etc.
+
+  // Phase v4.1-1.3a — boot a unified mode-aware Logger ('cli-interactive'
+  // mode = no stdout sinks, REPL is sacred). Declared here so the gateway
+  // processor + channel manager (later in the function) can both attach
+  // scoped child loggers to the same root.
+  const { logger: bootLogger } = createBootLogger({
+    mode:    'cli-interactive',
+    logsDir: paths.logsDir,
+  });
+  // Wire the gateway singleton's logger BEFORE registering its processor
+  // so register / unregister channel events are scoped correctly.
+  gateway.attachLogger(bootLogger.child('gateway'));
+
+  // ── Phase v4.1-subagent.1 — replace subagent_fanout stub with wired version
+  //
+  // tools/v4/index.ts registers a stub at boot so the schema is visible
+  // to MCP / /tools immediately. NOW that the runtime has a provider
+  // adapter, an active model, sessions, memory, and a built agent, we
+  // re-register subagent_fanout with the real callbacks so live calls
+  // (from REPL, MCP, or `aiden fanout`) actually execute children
+  // instead of returning the "not wired" stub error.
+  //
+  // The closures capture parent runtime handles. Each fanout call
+  // builds a fresh AidenAgent per child — the AidenAgent constructor
+  // is cheap (per-instance state, no module singletons), so N=5
+  // children = 5 instances + 5 cloned FallbackAdapters. The heavy
+  // shared subsystems (registry, skillLoader, paths, memoryManager,
+  // promptBuilder, promptBuilderOptions) are read-only and pass by
+  // reference.
+  toolRegistry.register(makeSubagentFanoutTool({
+    logger: bootLogger.child('subagent'),
+    resolveActiveModel: () => ({ providerId, modelId }),
+    aggregatorAdapter: adapter,
+    resolveProviders: (): ProviderOption[] => {
+      // When the parent uses FallbackAdapter, expose every key-present
+      // slot's (providerId, modelId) so rotation can spread children
+      // across distinct providers / keys. Otherwise just the active
+      // provider+model pair — single-provider rotation falls back to
+      // slot rotation within the FallbackAdapter at run time, OR to
+      // pure same-provider sampling (singleProviderWarning fires).
+      if (adapter instanceof FallbackAdapter) {
+        const diag = adapter.getDiagnostics();
+        const live = diag.slots.filter((s) => s.keyPresent);
+        if (live.length > 0) {
+          return live.map((s) => ({
+            providerId: s.providerId,
+            modelId:    s.modelId,
+            label:      s.id,
+          }));
+        }
+      }
+      return [{ providerId, modelId }];
+    },
+    runChild: async (childOpts: RunChildArgs): Promise<string> => {
+      // Per-child context: paths / skillLoader / memoryManager / processes
+      // are SAFE to share (read-only or per-call by design). The approval
+      // engine is intentionally OMITTED — N children competing for one
+      // stdin REPL would deadlock.
+      const childCtx = {
+        cwd:           process.cwd(),
+        paths,
+        sessions:      sessionManager,
+        memory:        memoryManager,
+        skillLoader,
+        // approvalEngine, ssrfProtection, tirithScanner, memoryGuard:
+        // SSRF + Tirith would be safe to share but adding them now
+        // expands the per-child surface; keep lean for v4.1-subagent.1
+        // and revisit when fanout actually exercises network or shell
+        // tools (gated by ALLOW_DESTRUCTIVE).
+      };
+
+      // Filter the tool surface. Default-safe: read-only tools only.
+      // AIDEN_SUBAGENT_ALLOW_DESTRUCTIVE=1 mirrors the MCP env from
+      // v4.1-mcp — predictable, env-driven.
+      const allowDestructive =
+        process.env.AIDEN_SUBAGENT_ALLOW_DESTRUCTIVE === '1' ||
+        process.env.AIDEN_SUBAGENT_ALLOW_DESTRUCTIVE === 'true';
+      const childToolNames: string[] = [];
+      for (const name of toolRegistry.list()) {
+        const h = toolRegistry.get(name);
+        if (!h) continue;
+        if (h.mutates && !allowDestructive) continue;
+        // Avoid recursive fanout this phase — children cannot spawn
+        // their own children. Recursion was capped at depth 1 by
+        // default in prior multi-agent systems for the same reason;
+        // v3 starved nested spawns.
+        if (name === 'subagent_fanout') continue;
+        childToolNames.push(name);
+      }
+      const childExecutor = toolRegistry.buildExecutor(childCtx);
+      const childTools = childToolNames
+        .map((n) => toolRegistry.get(n)?.schema)
+        .filter((s): s is NonNullable<typeof s> => !!s);
+
+      // Provider isolation: clone the FallbackAdapter so per-child
+      // rate-limit state doesn't pollute the parent or siblings.
+      // Non-Fallback adapters are stateless by spec (providers/v4/
+      // types.ts:190) so direct reuse is safe.
+      const childProvider = adapter instanceof FallbackAdapter
+        ? adapter.clone()
+        : adapter;
+
+      // Build per-child AidenAgent. Skip the moat layers (PlannerGuard,
+      // HonestyEnforcement, SkillTeacher, SkillEnforcementTracker) —
+      // they're parent-loop concerns and add cost without value at the
+      // child scale. Skip promptBuilder too: children get a SHORT
+      // system prompt (brief identity + role) instead of the parent's
+      // full SOUL.md + 72-skills inventory + memory snapshot. The
+      // tradeoff is deliberate — children answer the GOAL, not "be
+      // Aiden". With the full prompt, trivial queries take 30s+ for
+      // children to generate verbose self-introductions; the lean
+      // child prompt brings n=2 trivial fanouts under 12s. Parent
+      // should pass any context children genuinely need via the
+      // `query` / `tasks[].context` argument.
+      const child = new AidenAgent({
+        provider:             childProvider,
+        tools:                childTools,
+        toolExecutor:         childExecutor,
+        maxTurns:             childOpts.maxIterations,
+        providerId:           childOpts.provider.providerId,
+        modelId:              childOpts.provider.modelId,
+        // No promptBuilder — childSystemPrompt prepended manually below.
+        // No fallback strategy — child failures bubble up to the
+        // orchestrator, which surfaces them in the result envelope.
+      });
+
+      // Honour the abort signal — if the parent aborts mid-call (or the
+      // per-child timeout fires), short-circuit before dispatching to
+      // the provider. AidenAgent doesn't take an AbortSignal directly;
+      // the AbortController plumbing through fetch is the
+      // v4.1-subagent.2 / v4.2 hardening pass. Pre-check here for the
+      // synchronous path.
+      if (childOpts.signal.aborted) {
+        throw new Error('aborted before dispatch');
+      }
+
+      // Brief, role-aware system prompt — drops 5KB+ of Aiden identity
+      // boilerplate that would otherwise inflate every child to 30s+
+      // wall-clock for a trivial query. The parent agent retains the
+      // full prompt when it's the orchestrator; children answer the
+      // goal directly.
+      const roleLine = childOpts.role
+        ? `Role: ${childOpts.role}. `
+        : '';
+      const childSystemPrompt =
+        `You are one of ${childOpts.index >= 0 ? 'N' : '?'} parallel subagents. ` +
+        `${roleLine}Answer the user's request concisely. Use available tools when ` +
+        `the answer requires real-world information you don't have memorized.`;
+      const history: ProviderMessage[] = [
+        { role: 'system', content: childSystemPrompt },
+        { role: 'user',   content: childOpts.prompt },
+      ];
+      const result = await child.runConversation(history);
+      return result.finalContent;
+    },
+  }));
+  bootLogger.child('subagent').info('subagent_fanout: wired (replaces stub)', {
+    providerId,
+    modelId,
+    fallback: adapter instanceof FallbackAdapter ? 'FallbackAdapter' : 'direct',
+  });
+
+  // ── Phase v4.1-2.1: gateway message processor ────────────────────
+  //
+  // Channel adapters call `gateway.routeMessage(...)` for every inbound
+  // message; the gateway then invokes the registered processor — that's
+  // the bridge from channel-side I/O to the agent loop. `aiden serve`
+  // wires its own processor in `api/server.ts` (HTTP-hops to /api/chat
+  // because Express is already up). The CLI host (Phase v4.1-1.1)
+  // never had one, so every Telegram inbound was throwing
+  // "No message processor registered" and the user saw the
+  // friendly-fallback "Something went wrong" reply.
+  //
+  // The closure mirrors the api/server processor's intent — one agent
+  // turn per inbound — but invokes `agent.runConversation()` directly
+  // instead of round-tripping through HTTP. Per-(channel, channelId)
+  // history persists through the same SessionStore the REPL uses, so
+  // a Telegram conversation accumulates context across messages, and
+  // a future `/sessions` listing surfaces those threads alongside REPL
+  // sessions.
+  const gatewayProcessorLog = bootLogger.child('gateway.processor');
+  // gateway sessionId (`session_<ts>`) → sessionStore session id.
+  // In-memory only; restart re-creates a fresh sessionStore session
+  // for the same channel+user pair.
+  const gatewaySessionMap = new Map<string, string>();
+  gateway.setProcessor(async (message) => {
+    try {
+      // 1. Resolve a sessionStore session for this gateway session.
+      //    sessionManager.startSession opens a new row; we cache the
+      //    mapping so subsequent messages from the same chat append
+      //    to the same history.
+      const gatewaySid = message.sessionId
+        ?? `${message.channel}_${message.channelId}`;
+      let storeSid = gatewaySessionMap.get(gatewaySid);
+      if (!storeSid) {
+        const created = sessionManager.startSession({
+          providerId,
+          modelId,
+          title: `${message.channel}:${message.channelId}`,
+        });
+        storeSid = created.id;
+        gatewaySessionMap.set(gatewaySid, storeSid);
+      }
+
+      // 2. Load past messages for this session and append the new
+      //    user turn so the agent sees full context. We drop tool /
+      //    system rows on load — the agent's prompt builder rebuilds
+      //    those from scratch each call.
+      // Provider Message union has tool-specific variants; we only
+      // load the user/assistant turns and cast to satisfy the union.
+      // Tool-call replay across adapter restarts isn't a feature we
+      // need for chat-channel UX (Phase v4.1-2.1 scope).
+      const past = store.getMessages(storeSid)
+        .filter((r) => r.role === 'user' || r.role === 'assistant')
+        .map((r) => ({ role: r.role, content: r.content })) as import('../../providers/v4/types').Message[];
+      const userTurn = { role: 'user' as const, content: message.text };
+      const history: import('../../providers/v4/types').Message[] = [...past, userTurn];
+
+      // 3. Run one agent turn.
+      const result = await agent.runConversation(history);
+
+      // 4. Persist the new tail (everything past the loaded history) so
+      //    the next inbound resumes seamlessly. Mirror chatSession's
+      //    record-turn slice convention.
+      const newSlice = result.messages.slice(history.length - 1);
+      sessionManager.recordTurn(storeSid, newSlice, result.totalUsage);
+
+      return result.finalContent || '(no response)';
+    } catch (err: any) {
+      // Diagnostics route through the unified logger — nothing reaches
+      // stdout / stderr so the REPL stays clean. The gateway's own
+      // catch returns the friendly fallback to the user.
+      gatewayProcessorLog.error(
+        `processor failed: ${err?.message ?? String(err)}`,
+        { channel: message.channel, channelId: message.channelId },
+      );
+      throw err;
+    }
+  });
+
   // Command registry.
   const commandRegistry = new CommandRegistry();
   for (const cmd of allCommands) commandRegistry.register(cmd);
@@ -975,6 +1362,64 @@ export async function buildAgentRuntime(
     }
   } catch (err) {
     display.dim(`(skill commands unavailable: ${(err as Error).message})`);
+  }
+
+  // ── Phase v4.1-1.1: CLI-side channel manager ──────────────────────
+  //
+  // Build a manager local to this CLI process and register the env-driven
+  // adapters that don't need an Express app (Telegram is the only one in
+  // Phase 1 — Discord/Slack/etc. land iteratively). Webhook/Twilio stay
+  // out of CLI scope because they need an HTTP listener.
+  //
+  // Conflict guard: when `aiden serve` is already running locally, BOTH
+  // processes would race the same Telegram bot's long-poll, and the
+  // server would lose every other update with a 409. Probe localhost:4200
+  // briefly; if the server answers, skip auto-start in CLI but still
+  // build the manager so /channel list / status work as a read-only view.
+  //
+  // Phase v4.1-1.3a — `bootLogger` + gateway logger were attached
+  // earlier (right after the agent was constructed) so the gateway
+  // processor closure could share the same scoped sink chain. Here
+  // we just plumb the channels child logger into the manager.
+  const channelManager = new ChannelManager({ logger: bootLogger.child('channels') });
+  // Phase v4.1-4.1 — wire active-model lookup into the Telegram
+  // adapter. The closure captures `providerId` / `modelId` from
+  // this scope so the photo-vision module can decide native vs
+  // text routing (and pdf-extract can compute the truncation
+  // budget) using the SAME model the chat path already uses.
+  channelManager.register(new TelegramAdapter({
+    activeModelInfo: () => ({
+      providerId,
+      modelId,
+      contextWindow: findModel(providerId, modelId)?.contextLength,
+    }),
+  }));
+
+  let serverIsHosting = false;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 250);
+    const probe = await fetch('http://127.0.0.1:4200/health', {
+      signal: ctrl.signal,
+    }).catch(() => null);
+    clearTimeout(timer);
+    if (probe && (probe.status >= 200 && probe.status < 500)) {
+      serverIsHosting = true;
+    }
+  } catch {
+    /* no server — fall through to CLI-host */
+  }
+
+  if (serverIsHosting) {
+    display.dim(
+      '[channels] aiden serve is running locally — channel adapters hosted there, /channel commands stay read-only.',
+    );
+  } else {
+    // start() resolves quickly when no token is set (logs "Disabled" and
+    // returns). Errors don't crash boot.
+    channelManager.startAll().catch((e: Error) =>
+      display.dim(`[channels] startAll error: ${e.message}`),
+    );
   }
 
   return {
@@ -1011,6 +1456,7 @@ export async function buildAgentRuntime(
     personalityManager,
     pluginLoader,
     exploreMode,
+    channelManager,
   };
 }
 
@@ -1065,6 +1511,12 @@ export interface AgentRuntime {
    * friendly "no provider configured" message instead of crashing.
    */
   exploreMode: boolean;
+  /**
+   * Phase v4.1-1.1 — live ChannelManager hosted by the CLI process.
+   * /channel slash commands operate on this; chatSession.run() awaits
+   * `stopAll()` on graceful exit so polling adapters disconnect.
+   */
+  channelManager: ChannelManager;
 }
 
 async function runInteractiveChat(cliOpts: any, opts: MainOptions): Promise<void> {
@@ -1095,6 +1547,9 @@ async function runInteractiveChat(cliOpts: any, opts: MainOptions): Promise<void
     // Phase 30.2.1 — boot card renders "model not configured" and
     // chat attempts get the friendly NotConfiguredError message.
     unconfigured: runtime.exploreMode,
+    // Phase v4.1-1.1 — live ChannelManager so /channel commands can
+    // list, add, remove, and inspect adapters without an external server.
+    channelManager: runtime.channelManager,
   };
 
   if (cliOpts.tui) {
@@ -1113,6 +1568,10 @@ async function runInteractiveChat(cliOpts: any, opts: MainOptions): Promise<void
   // Phase 17 Task 5: fire onTeardown so plugins (e.g. CDP browser) can
   // close their resources before the process exits.
   await runtime.pluginLoader.teardown().catch(() => undefined);
+  // Phase v4.1-1.1 — stop polling adapters before exit so Telegram's
+  // long-poll TCP connection closes cleanly. stopAll() is best-effort
+  // and never throws.
+  await runtime.channelManager.stopAll().catch(() => undefined);
   runtime.store.close?.();
 }
 

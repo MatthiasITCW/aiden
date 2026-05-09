@@ -13,13 +13,15 @@ const ORANGE = '\x1b[38;2;255;107;53m';
 const RESET = '\x1b[39m';
 
 describe('cli/v4/box helpers', () => {
-  it('boxTop renders rounded corners and exact width fill', () => {
+  // Phase v4.1-tier3.1: corners flipped from rounded ╭╮╰╯ to sharp
+  // ┌┐└┘ to match Aiden's locked visual identity.
+  it('boxTop renders sharp corners and exact width fill', () => {
     const top = boxTop(5);
-    expect(top).toBe('╭─────╮');
+    expect(top).toBe('┌─────┐');
   });
 
-  it('boxBottom renders rounded corners and exact width fill', () => {
-    expect(boxBottom(5)).toBe('╰─────╯');
+  it('boxBottom renders sharp corners and exact width fill', () => {
+    expect(boxBottom(5)).toBe('└─────┘');
   });
 
   it('boxLine pads short content with a leading gutter space', () => {
@@ -37,8 +39,8 @@ describe('cli/v4/box helpers', () => {
 
   it('boxTopTitled embeds the title between dashes after the corner', () => {
     const top = boxTopTitled('Setup Complete', 50);
-    expect(top.startsWith('╭── Setup Complete ')).toBe(true);
-    expect(top.endsWith('╮')).toBe(true);
+    expect(top.startsWith('┌── Setup Complete ')).toBe(true);
+    expect(top.endsWith('┐')).toBe(true);
     // Width budget honoured: total visible width = 50 inner + 2 corners.
     expect(top.length).toBe(52);
   });

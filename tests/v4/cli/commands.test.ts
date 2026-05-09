@@ -57,7 +57,7 @@ function makeCtx(over: Record<string, unknown> = {}) {
 }
 
 describe('barrel exports', () => {
-  it('allCommands has 26 entries with unique names', () => {
+  it('allCommands has 31 entries with unique names', () => {
     // Phase 16b.3 added /identity (17 → 18).
     // Phase 16b.4 added /debug-prompt (18 → 19).
     // Phase 16c added /streaming (19 → 20).
@@ -67,9 +67,13 @@ describe('barrel exports', () => {
     // Phase 20.1 added /doctor slash command (23 → 24).
     // Phase 24.1b added /cron slash command (24 → 25).
     // Phase 30.2.1 added /setup slash command (25 → 26).
-    expect(allCommands.length).toBe(26);
+    // Phase v4.1-1.1 added /channel slash command (26 → 27).
+    // Phase v4.1-voice-cli added /voice (27 → 28).
+    // Phase v4.1-tier3.1 added /status + /show (28 → 30).
+    // Phase v4.1-tier3-essentials added /history (30 → 31).
+    expect(allCommands.length).toBe(31);
     const names = new Set(allCommands.map((c) => c.name));
-    expect(names.size).toBe(26);
+    expect(names.size).toBe(31);
   });
 
   it('every command exposes name, description, category', () => {

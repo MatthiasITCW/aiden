@@ -32,6 +32,7 @@ import type { PersonalityManager } from '../../core/v4/personality';
 import type { AidenPaths } from '../../core/v4/paths';
 import type { AidenAgent } from '../../core/v4/aidenAgent';
 import type { PluginLoader } from '../../core/v4/plugins/pluginLoader';
+import type { ChannelManager } from '../../core/channels/manager';
 
 /**
  * Lightweight session abstraction commands consume. The full chat REPL
@@ -88,6 +89,12 @@ export interface SlashCommandContext {
    * permissions file before re-discovering.
    */
   pluginLoader?: PluginLoader;
+  /**
+   * Phase v4.1-1.1: live ChannelManager hosted by the CLI. Used by
+   * /channel commands to list, add, remove, and inspect adapter
+   * lifecycle without spinning up a separate API server process.
+   */
+  channelManager?: ChannelManager;
   /**
    * Phase 17: prompt-the-user hook used by /plugins install for the
    * permission summary confirmation. Returns true to grant, false to

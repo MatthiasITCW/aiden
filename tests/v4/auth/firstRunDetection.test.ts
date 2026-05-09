@@ -128,7 +128,7 @@ describe('printPostWizardTutorial', () => {
 
   it('67. renders the boxed setup-complete summary', () => {
     const text = captureTutorial('4.0.0');
-    expect(text).toMatch(/╭── Setup Complete /);
+    expect(text).toMatch(/┌── Setup Complete /);
     expect(text).toMatch(/Aiden v4\.0\.0 is ready/);
     expect(text).toMatch(/All your files in:/);
     expect(text).toMatch(/Re-run setup:/);

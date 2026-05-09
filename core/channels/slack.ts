@@ -27,6 +27,7 @@
 import { App, LogLevel } from '@slack/bolt'
 import { gateway } from '../gateway'
 import type { ChannelAdapter } from './adapter'
+import { noopLogger, type Logger } from '../v4/logger'
 
 export class SlackAdapter implements ChannelAdapter {
   readonly name = 'slack'
@@ -37,6 +38,7 @@ export class SlackAdapter implements ChannelAdapter {
   private appToken:        string
   private allowedChannels: Set<string>
   private healthy          = false
+  private log:             Logger = noopLogger() // Phase v4.1-1.3a — wired by ChannelManager.register
 
   constructor() {
     this.botToken        = process.env.SLACK_BOT_TOKEN          ?? ''
@@ -48,11 +50,13 @@ export class SlackAdapter implements ChannelAdapter {
       : new Set()
   }
 
+  attachLogger(logger: Logger): void { this.log = logger }
+
   // ── Lifecycle ──────────────────────────────────────────────
 
   async start(): Promise<void> {
     if (!this.botToken || !this.signingSecret) {
-      console.log('[Slack] Disabled — set SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET to enable')
+      this.log.info('Disabled — set SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET to enable')
       return
     }
 
@@ -75,7 +79,7 @@ export class SlackAdapter implements ChannelAdapter {
 
       const response = await this.processMessage(msg.channel, msg.user ?? 'unknown', msg.text ?? '')
       await say({ text: response, thread_ts: msg.ts }).catch((e: Error) =>
-        console.error('[Slack] say error:', e.message),
+        this.log.error(`say error: ${e.message}`),
       )
     })
 
@@ -87,7 +91,7 @@ export class SlackAdapter implements ChannelAdapter {
       const text = (event.text ?? '').replace(/<@[^>]+>/g, '').trim()
       const response = await this.processMessage(event.channel, event.user, text)
       await say({ text: response, thread_ts: event.ts }).catch((e: Error) =>
-        console.error('[Slack] mention reply error:', e.message),
+        this.log.error(`mention reply error: ${e.message}`),
       )
     })
 
@@ -100,7 +104,7 @@ export class SlackAdapter implements ChannelAdapter {
       }
       const response = await this.processMessage(command.channel_id, command.user_id, command.text)
       await say(response).catch((e: Error) =>
-        console.error('[Slack] slash reply error:', e.message),
+        this.log.error(`slash reply error: ${e.message}`),
       )
     })
 
@@ -110,7 +114,7 @@ export class SlackAdapter implements ChannelAdapter {
         await this.app!.client.chat.postMessage({ channel: msg.channelId, text: msg.text })
         return true
       } catch (e: any) {
-        console.error('[Slack] Delivery error:', e.message)
+        this.log.error(`Delivery error: ${e.message}`)
         return false
       }
     })
@@ -119,9 +123,9 @@ export class SlackAdapter implements ChannelAdapter {
     try {
       await this.app.start(port)
       this.healthy = true
-      console.log(`[Slack] Connected (${useSocketMode ? 'socket mode' : `HTTP mode port ${port}`})`)
+      this.log.info(`Connected (${useSocketMode ? 'socket mode' : `HTTP mode port ${port}`})`)
     } catch (e: any) {
-      console.error('[Slack] Start failed:', e.message)
+      this.log.error(`Start failed: ${e.message}`)
       this.healthy = false
     }
   }
@@ -133,12 +137,12 @@ export class SlackAdapter implements ChannelAdapter {
       await this.app.stop().catch(() => {})
       this.app = null
     }
-    console.log('[Slack] Disconnected')
+    this.log.info('Disconnected')
   }
 
   async send(channelId: string, message: string): Promise<void> {
     await this.app?.client.chat.postMessage({ channel: channelId, text: message }).catch((e: Error) =>
-      console.error('[Slack] send error:', e.message),
+      this.log.error(`send error: ${e.message}`),
     )
   }
 
@@ -156,7 +160,7 @@ export class SlackAdapter implements ChannelAdapter {
         timestamp: Date.now(),
       })
     } catch (e: any) {
-      console.error('[Slack] routeMessage error:', e.message)
+      this.log.error(`routeMessage error: ${e.message}`)
       return '❌ Something went wrong. Try again.'
     }
   }

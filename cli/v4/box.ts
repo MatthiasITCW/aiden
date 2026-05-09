@@ -5,33 +5,56 @@
  * Aiden — local-first agent.
  */
 /**
- * cli/v4/box.ts — rounded-corner box drawing helpers (Phase 22).
+ * cli/v4/box.ts — sharp + double-line box drawing helpers.
  *
- * Shared between the REPL boot card (chatSession.ts), the
- * setup-complete summary (setupWizard.ts), the /doctor health box
- * (doctor.ts), and the approval prompt box (callbacks.ts). Per the
- * Aiden uses the rounded set (╭╮╰╯) for box framing — rounded
- * reads softer at launch-card scale than square corners.
+ * Tier-3.1 (v4.1-tier3.1) replaced the rounded set (╭╮╰╯) with
+ * sharp corners (┌┐└┘) for the default box and added a second
+ * double-line variant (╔╗╚╝═║) for emphasis surfaces (e.g. the
+ * approval/escalation banner). The default `box*` exports continue
+ * to point at the sharp variant so existing callers compile
+ * unchanged; `boxSharp*` and `boxDouble*` are explicit aliases for
+ * call sites that want to declare intent.
  *
  * Width counts the inner cell only (between the verticals). Content
  * is padded to width-1 so a single leading space gives the box a
  * visual gutter.
  *
- * ANSI awareness (Phase 22 Group C smoke-fix): Group C's per-row
- * coloured content (orange ✓ icons, soft-cyan labels) inflated
- * `string.length` from ~50 visible chars to ~120 bytes per row, so
- * the prior byte-based padding under-filled and the closing `│`
- * drifted inside the visible box top/bottom borders. The helpers
+ * ANSI awareness: per-row coloured content (orange ✓ icons, soft-
+ * cyan labels) inflates `String.length` from ~50 visible chars to
+ * ~120 bytes per row, so byte-based padding under-fills and the
+ * closing vertical drifts inside the visible borders. The helpers
  * below measure / truncate against the visible (post-strip)
  * length, so coloured content frames identically to plain content.
  */
 
-const TL = '╭';
-const TR = '╮';
-const BL = '╰';
-const BR = '╯';
-const H = '─';
-const V = '│';
+// ── Sharp (default) ──────────────────────────────────────────────
+const SHARP = {
+  TL: '┌',
+  TR: '┐',
+  BL: '└',
+  BR: '┘',
+  H:  '─',
+  V:  '│',
+} as const;
+
+// ── Double-line (emphasis) ───────────────────────────────────────
+const DOUBLE = {
+  TL: '╔',
+  TR: '╗',
+  BL: '╚',
+  BR: '╝',
+  H:  '═',
+  V:  '║',
+} as const;
+
+interface GlyphSet {
+  TL: string;
+  TR: string;
+  BL: string;
+  BR: string;
+  H:  string;
+  V:  string;
+}
 
 /**
  * Strip ANSI CSI escape sequences and return the visible length in
@@ -39,8 +62,9 @@ const V = '│';
  * codes we emit (`\x1b[38;2;r;g;bm`, `\x1b[39m`, `\x1b[0m`, etc.).
  *
  * Doesn't try to handle East Asian wide chars / emoji-with-VS16 — we
- * use only single-cell glyphs in box content (✓ ⚠ ✗ ⏵ ▶ ⊕). If the
- * skill expands in v4.1 to cover wide chars, swap to `string-width`.
+ * use only single-cell glyphs in box content (✓ ⚠ ✗ ⏵ ▶ ⊕). Wide-
+ * char-aware width is available in `cli/v4/table.ts` via
+ * `string-width`, used only by the table renderer.
  */
 const ANSI_REGEX = /\x1b\[[0-9;]*[A-Za-z]/g;
 export function visibleLength(s: string): number {
@@ -50,10 +74,8 @@ export function visibleLength(s: string): number {
 /**
  * Truncate `s` to `maxVisible` visible columns, preserving any ANSI
  * sequences encountered along the way. When the input contained ANSI
- * codes, an SGR reset is appended so the closing `│` doesn't inherit
- * the truncated content's colour. Plain-text input is unchanged
- * beyond the truncation, so callers building plain rows still see
- * exactly `maxVisible` characters back.
+ * codes, an SGR reset is appended so the closing vertical doesn't
+ * inherit the truncated content's colour.
  */
 export function truncateVisible(s: string, maxVisible: number): string {
   if (visibleLength(s) <= maxVisible) return s;
@@ -79,32 +101,93 @@ export function truncateVisible(s: string, maxVisible: number): string {
   return sawAnsi ? out + '\x1b[0m' : out;
 }
 
-export function boxTop(width: number): string {
-  return TL + H.repeat(width) + TR;
+// ── Generic primitives ───────────────────────────────────────────
+
+function renderTop(g: GlyphSet, width: number): string {
+  return g.TL + g.H.repeat(width) + g.TR;
 }
 
-export function boxBottom(width: number): string {
-  return BL + H.repeat(width) + BR;
+function renderBottom(g: GlyphSet, width: number): string {
+  return g.BL + g.H.repeat(width) + g.BR;
 }
 
-export function boxLine(content: string, width: number): string {
+function renderLine(g: GlyphSet, content: string, width: number): string {
   const inner = ' ' + content;
   const visible = visibleLength(inner);
   if (visible >= width) {
-    return V + truncateVisible(inner, width) + V;
+    return g.V + truncateVisible(inner, width) + g.V;
   }
-  return V + inner + ' '.repeat(width - visible) + V;
+  return g.V + inner + ' '.repeat(width - visible) + g.V;
+}
+
+function renderTopTitled(g: GlyphSet, title: string, width: number): string {
+  const lhs = `${g.TL}${g.H}${g.H} ${title} `;
+  const visibleLhs = 2 + 1 + visibleLength(title) + 1;
+  const remaining = Math.max(0, width - visibleLhs);
+  return `${lhs}${g.H.repeat(remaining)}${g.TR}`;
+}
+
+// ── Sharp variant (default) ──────────────────────────────────────
+
+export function boxTop(width: number): string {
+  return renderTop(SHARP, width);
+}
+
+export function boxBottom(width: number): string {
+  return renderBottom(SHARP, width);
+}
+
+export function boxLine(content: string, width: number): string {
+  return renderLine(SHARP, content, width);
+}
+
+export function boxTopTitled(title: string, width: number): string {
+  return renderTopTitled(SHARP, title, width);
+}
+
+// Explicit sharp aliases (for call sites that want to declare intent).
+export const boxSharpTop        = boxTop;
+export const boxSharpBottom     = boxBottom;
+export const boxSharpLine       = boxLine;
+export const boxSharpTopTitled  = boxTopTitled;
+
+// ── Double-line variant ──────────────────────────────────────────
+
+export function boxDoubleTop(width: number): string {
+  return renderTop(DOUBLE, width);
+}
+
+export function boxDoubleBottom(width: number): string {
+  return renderBottom(DOUBLE, width);
+}
+
+export function boxDoubleLine(content: string, width: number): string {
+  return renderLine(DOUBLE, content, width);
+}
+
+export function boxDoubleTopTitled(title: string, width: number): string {
+  return renderTopTitled(DOUBLE, title, width);
 }
 
 /**
- * Render a titled box header — top border with the title injected just
- * after the left corner, e.g. `╭─ Setup Complete ─────╮`. Used for the
- * setup-complete summary and the /doctor + approval boxes.
+ * Convenience: wrap an array of content rows with double-line
+ * borders and an optional title. Returns the full multi-line box
+ * as a single string with `\n` separators.
  */
-export function boxTopTitled(title: string, width: number): string {
-  // Two leading dashes, space, title, space, then fill remaining dashes.
-  const lhs = `${TL}${H}${H} ${title} `;
-  const visibleLhs = 2 + 1 + visibleLength(title) + 1; // dashes + space + title + space
-  const remaining = Math.max(0, width - visibleLhs);
-  return `${lhs}${H.repeat(remaining)}${TR}`;
+export function boxDouble(rows: string[], width: number, title?: string): string {
+  const top = title ? boxDoubleTopTitled(title, width) : boxDoubleTop(width);
+  const body = rows.map((r) => boxDoubleLine(r, width)).join('\n');
+  const bottom = boxDoubleBottom(width);
+  return [top, body, bottom].filter(Boolean).join('\n');
+}
+
+/**
+ * Convenience: wrap an array of content rows with sharp borders
+ * and an optional title.
+ */
+export function boxSharp(rows: string[], width: number, title?: string): string {
+  const top = title ? boxTopTitled(title, width) : boxTop(width);
+  const body = rows.map((r) => boxLine(r, width)).join('\n');
+  const bottom = boxBottom(width);
+  return [top, body, bottom].filter(Boolean).join('\n');
 }

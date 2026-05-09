@@ -67,6 +67,14 @@ export const SUBSECTION_MAP: Readonly<Record<string, Subsection>> = {
   quit: 'System',
   yolo: 'System',
   usage: 'System',
+  cron: 'System',
+  setup: 'System',
+  channel: 'System',
+  // Phase v4.1-tier3.1 + tier3-essentials commands.
+  voice: 'System',
+  status: 'System',
+  show: 'System',
+  history: 'System',
 
   // ── Authentication ──
   auth: 'Authentication',
@@ -83,7 +91,7 @@ export const help: SlashCommand = {
   name: 'help',
   description: 'List available slash commands.',
   category: 'system',
-  icon: '❔',
+  icon: '?',
   aliases: ['h', '?'],
   handler: async (ctx: SlashCommandContext) => {
     const all = ctx.registry.list();
@@ -97,13 +105,15 @@ export const help: SlashCommand = {
       buckets.get(subsectionFor(c.name))!.push(c);
     }
 
+    // Tier-3.1: gate icon column on AIDEN_UI_ICONS=1 (default OFF).
+    const showIcons = process.env.AIDEN_UI_ICONS === '1';
     for (const sec of SUBSECTION_ORDER) {
       const cmds = buckets.get(sec)!;
       if (cmds.length === 0) continue;
       ctx.display.dim(`── ${sec} ──`);
       for (const c of cmds) {
-        const icon = c.icon ?? ' ';
-        ctx.display.write(`  ${icon} /${c.name.padEnd(14)} ${c.description}\n`);
+        const prefix = showIcons ? `${c.icon ?? ' '} ` : '';
+        ctx.display.write(`  ${prefix}/${c.name.padEnd(14)} ${c.description}\n`);
       }
       ctx.display.write('\n');
     }
@@ -111,7 +121,8 @@ export const help: SlashCommand = {
     if (skill.length > 0) {
       ctx.display.dim('── Skills ──');
       for (const c of skill) {
-        ctx.display.write(`  ⚡ /${c.name.padEnd(14)} ${c.description}\n`);
+        const prefix = showIcons ? '⚡ ' : '';
+        ctx.display.write(`  ${prefix}/${c.name.padEnd(14)} ${c.description}\n`);
       }
     }
     return {};

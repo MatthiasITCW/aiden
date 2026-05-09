@@ -64,11 +64,16 @@ async function defaultPrompts(): Promise<PromptApi> {
   };
 }
 
+// Tier-3-essentials: terse 4-state ladder labels per dispatch.
+// Once / Session / Always / Deny — same underlying ApprovalDecision
+// values, friendlier wording. Persistence to <aidenHome>/approvals.json
+// is wired in aidenCLI.ts via approvalEngine.callbacks.persistAllow
+// (Phase 16f); session-scope cache in approvalEngine.allowForSession.
 const DECISION_CHOICES: { name: string; value: ApprovalDecision }[] = [
-  { name: 'Allow once', value: 'allow' },
-  { name: 'Allow this session', value: 'allow_session' },
-  { name: 'Allow always', value: 'allow_always' },
-  { name: 'Deny', value: 'deny' },
+  { name: 'Once',    value: 'allow' },
+  { name: 'Session', value: 'allow_session' },
+  { name: 'Always',  value: 'allow_always' },
+  { name: 'Deny',    value: 'deny' },
 ];
 
 const KNOWN_TIERS: ReadonlySet<RiskTier> = new Set(['safe', 'caution', 'dangerous']);
@@ -260,6 +265,31 @@ Reply with ONE word: safe, caution, or dangerous.`;
     }
   };
 
+  /**
+   * Phase v4.1-skill-mining — post-turn cue when the miner has
+   * staged a candidate for `/skills review`. Single dim line, no
+   * modal. Pulls the skill name + confidence from the candidate's
+   * own SKILL.md (best-effort parse; falls back to id slice).
+   */
+  onSkillCandidate = (candidate: {
+    id:                  string;
+    candidateConfidence: number;
+    skillContent:        string;
+  }): void => {
+    let name = candidate.id.slice(0, 8);
+    try {
+      // Tier-3.1c sweep: do not import here — chatSession's display
+      // wraps strings, and the SKILL.md frontmatter is plain enough
+      // that a quick regex is fine for the cue line.
+      const m = /\bname\s*:\s*([^\n]+)/.exec(candidate.skillContent);
+      if (m) name = m[1].trim();
+    } catch { /* fall through */ }
+    const conf = candidate.candidateConfidence.toFixed(2);
+    this.display.dim(
+      `[skill] candidate '${name}' queued (conf ${conf}) — run /skills review`,
+    );
+  };
+
   /** ContextCompressor sink — always shows. */
   onCompression = (result: CompressionResult): void => {
     if (result.refused) {
@@ -301,14 +331,23 @@ Reply with ONE word: safe, caution, or dangerous.`;
   };
 }
 
+// Tier-3.1 (v4.1-tier3.1): replaced 🟢/🟡/🔴 emoji badges with
+// text-state badges. Each badge is 7 visible chars (pad-aligned) so
+// approval-prompt rows align across tiers. Plain ANSI SGR colour to
+// keep this file dependency-free.
+const ANSI_GREEN  = '\x1b[32m';
+const ANSI_YELLOW = '\x1b[33m';
+const ANSI_RED    = '\x1b[31m';
+const ANSI_RESET  = '\x1b[0m';
+
 function badgeForTier(tier?: RiskTier): string {
   switch (tier) {
     case 'safe':
-      return '🟢 safe';
+      return `${ANSI_GREEN}[ALLOW]${ANSI_RESET} safe`;
     case 'caution':
-      return '🟡 caution';
+      return `${ANSI_YELLOW}[WARN] ${ANSI_RESET} caution`;
     case 'dangerous':
-      return '🔴 dangerous';
+      return `${ANSI_RED}[DENY] ${ANSI_RESET} dangerous`;
     default:
       return '';
   }

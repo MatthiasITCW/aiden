@@ -46,13 +46,13 @@ describe('renderHealthBox (Phase 22 Task 5A)', () => {
     const display = makeDisplay({ mono: true });
     const out = renderHealthBox(SAMPLE_REPORT, display);
     const lines = out.split('\n');
-    expect(lines[0]).toMatch(/^╭── Health Check /);
+    expect(lines[0]).toMatch(/^┌── Health Check /);
   });
 
   it('closes with a rounded box bottom border', () => {
     const display = makeDisplay({ mono: true });
     const lines = renderHealthBox(SAMPLE_REPORT, display).split('\n');
-    expect(lines.at(-1)).toMatch(/^╰─+╯$/);
+    expect(lines.at(-1)).toMatch(/^└─+┘$/);
   });
 
   it('renders one row per check with the passed/warn/failed glyph', () => {
@@ -173,7 +173,7 @@ describe('renderApprovalBox (Phase 22 Task 5B)', () => {
   it('opens with a rounded box top titled "Approval required"', () => {
     const display = makeDisplay({ mono: true });
     const out = renderApprovalBox(SAMPLE_REQ as any, display);
-    expect(out.split('\n')[0]).toMatch(/^╭── Approval required /);
+    expect(out.split('\n')[0]).toMatch(/^┌── Approval required /);
   });
 
   it('renders Tool, Reason, and Args fields inside the box', () => {

@@ -1,0 +1,216 @@
+/**
+ * Copyright (c) 2026 Shiva Deore (Taracod).
+ * Licensed under AGPL-3.0. See LICENSE for details.
+ *
+ * Aiden — local-first agent.
+ */
+/**
+ * tools/v4/subagent/subagentFanout.ts — `subagent_fanout` wrapper.
+ *
+ * Phase v4.1-subagent. Spawns N parallel agent instances against the
+ * same problem (or a partition of it), then merges results via the
+ * chosen strategy. The orchestrator lives at
+ * `core/v4/subagent/fanout.ts`; this file is the agent-callable
+ * adapter that:
+ *
+ *   1. Validates the LLM's call args against the schema.
+ *   2. Builds a per-child runner (closure over the parent runtime)
+ *      that wraps an AidenAgent run.
+ *   3. Filters mutating tools out of each child's schema array
+ *      unless `AIDEN_SUBAGENT_ALLOW_DESTRUCTIVE=1`.
+ *   4. Returns the merged output + raw N results + diagnostics.
+ *
+ * The factory pattern (`makeSubagentFanoutTool`) mirrors
+ * `lookup_tool_schema` — the runtime constructs it with a closure
+ * over registry / providers / paths that the schema can't carry.
+ *
+ * Tool category is `network` not `write` — the tool itself doesn't
+ * touch disk; it only spends LLM tokens. That keeps it default-
+ * exposed in MCP under the read-only env (mutates: false).
+ *
+ * The description bakes a hard-learned lesson from prior multi-agent
+ * systems: "Self-reports are not verified facts" — the parent must
+ * verify any side-effects children report rather than trust the
+ * summary. Children's tool calls are executed in isolated contexts;
+ * a child claiming "wrote file X" or "ran command Y" must be
+ * verified by the parent before the parent acts on that claim.
+ */
+
+import type { ToolHandler } from '../../../core/v4/toolRegistry';
+import type { ProviderAdapter } from '../../../providers/v4/types';
+import type { Logger } from '../../../core/v4/logger/logger';
+import { noopLogger } from '../../../core/v4/logger/factory';
+import {
+  runFanout,
+  type FanoutMode,
+  type FanoutOptions,
+  type PartitionTask,
+  type RunChildArgs,
+} from '../../../core/v4/subagent/fanout';
+import {
+  resolveAggregatorOverride,
+  type MergeStrategy,
+} from '../../../core/v4/subagent/merger';
+import type { ProviderOption } from '../../../core/v4/subagent/providerRotation';
+
+/** Caller-supplied factory inputs. The runtime supplies these once at
+ *  boot from the closure scope (provider list, parent's active model,
+ *  aggregator adapter, run-child callback). */
+export interface SubagentFanoutFactoryOptions {
+  /** Resolves provider options at call time — env may have changed
+   *  since boot. Caller is the runtime; production reads
+   *  `config.yaml` + env. */
+  resolveProviders: () => ProviderOption[];
+  /** Resolves the parent's active model — used as default aggregator
+   *  unless `AIDEN_SUBAGENT_AGGREGATOR_MODEL` overrides. */
+  resolveActiveModel: () => { providerId: string; modelId: string };
+  /** Adapter used for aggregator calls. Production threads the
+   *  parent's adapter; tests inject a stub. */
+  aggregatorAdapter: ProviderAdapter;
+  /** Per-child runner. Production constructs an AidenAgent per
+   *  child; tests inject a stub. */
+  runChild: (args: RunChildArgs) => Promise<string>;
+  /** Optional logger — defaults to noop. */
+  logger?: Logger;
+}
+
+const SCHEMA_DESC =
+  'Spawn N parallel agent children against the same problem (ensemble) or a partitioned task list, ' +
+  'then merge results via the chosen strategy. Use this for multi-perspective research, ' +
+  'provider-diverse fact-checking, or analyzing N independent inputs in parallel. ' +
+  'IMPORTANT: self-reports from children are not verified facts — if a child claims it ' +
+  'wrote a file, ran a command, or completed a side-effect, you (the parent) MUST verify ' +
+  'independently before trusting that claim.';
+
+export function makeSubagentFanoutTool(
+  factory: SubagentFanoutFactoryOptions,
+): ToolHandler {
+  return {
+    schema: {
+      name: 'subagent_fanout',
+      description: SCHEMA_DESC,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          mode: {
+            type: 'string',
+            description:
+              "'partition' = each child gets a different goal from `tasks`. " +
+              "'ensemble' = every child gets the same `query`.",
+            enum: ['partition', 'ensemble'],
+          },
+          n: {
+            type: 'number',
+            description:
+              'Number of children to spawn. Default 3, hard cap 5. ' +
+              'Higher N hits provider RPM limits and inflates tail latency.',
+          },
+          query: {
+            type: 'string',
+            description:
+              'Same input given to every child (ensemble mode only).',
+          },
+          tasks: {
+            type: 'array',
+            description:
+              'Per-child task list (partition mode only). Length must equal n.',
+          },
+          merge: {
+            type: 'string',
+            description:
+              "'all' = return raw N results, no aggregator (FREE). " +
+              "'vote' = LLM judge picks one verbatim (+1 call). " +
+              "'pick-best' = LLM judge picks one with reasoning (+1 call). " +
+              "'combine' = LLM synthesizes one unified answer (+1 call).",
+            enum: ['all', 'vote', 'pick-best', 'combine'],
+          },
+          timeoutMs: {
+            type: 'number',
+            description:
+              'Per-child wall-clock timeout (ms). Default 90000. ' +
+              'Outer wall-clock cap is 5x this value.',
+          },
+        },
+        required: ['mode'],
+      },
+    },
+    // mutates: false because the tool itself only spends tokens — disk /
+    // process side-effects, if any, happen INSIDE child agents whose
+    // toolsets are filtered to read-only by default. This keeps the
+    // tool default-exposed in MCP under the read-only env.
+    category: 'network',
+    mutates: false,
+    toolset: 'subagent',
+    async execute(args, _ctx) {
+      const logger = factory.logger ?? noopLogger();
+
+      // ── Coerce args ────────────────────────────────────────────
+      const mode = (args.mode === 'partition' || args.mode === 'ensemble')
+        ? args.mode as FanoutMode
+        : null;
+      if (!mode) {
+        return {
+          success: false,
+          error: "subagent_fanout: 'mode' must be 'partition' or 'ensemble'",
+        };
+      }
+
+      const n = typeof args.n === 'number' && Number.isInteger(args.n)
+        ? args.n
+        : 3;
+      const merge: MergeStrategy =
+        (args.merge === 'all' || args.merge === 'vote'
+          || args.merge === 'pick-best' || args.merge === 'combine')
+          ? args.merge as MergeStrategy
+          : 'combine';
+
+      const query  = typeof args.query === 'string' ? args.query : undefined;
+      const tasks  = Array.isArray(args.tasks)
+        ? (args.tasks as PartitionTask[])
+        : undefined;
+      const timeoutMs = typeof args.timeoutMs === 'number'
+        && args.timeoutMs > 0
+        ? args.timeoutMs
+        : undefined;
+
+      // ── Resolve providers + aggregator at call time ───────────
+      const providers = factory.resolveProviders();
+      if (providers.length === 0) {
+        return {
+          success: false,
+          error: 'subagent_fanout: no providers configured — run `aiden setup` first',
+        };
+      }
+
+      const aggOverride = resolveAggregatorOverride();
+      const aggregatorModel = aggOverride ?? factory.resolveActiveModel();
+
+      const fanoutOpts: FanoutOptions = {
+        mode,
+        query,
+        tasks,
+        n,
+        merge,
+        providers,
+        runChild:           factory.runChild,
+        aggregatorAdapter:  factory.aggregatorAdapter,
+        aggregatorModel,
+        timeoutMs,
+        logger,
+      };
+
+      try {
+        const result = await runFanout(fanoutOpts);
+        return {
+          success:    true,
+          merged:     result.merged,
+          results:    result.results,
+          diagnostics: result.diagnostics,
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { success: false, error: message };
+      }
+    },
+  };
+}

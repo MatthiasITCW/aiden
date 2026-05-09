@@ -27,10 +27,14 @@
 import path from 'path'
 import { gateway } from '../gateway'
 import type { ChannelAdapter } from './adapter'
+import { noopLogger, type Logger } from '../v4/logger'
 
 export class WhatsAppAdapter implements ChannelAdapter {
   readonly name = 'whatsapp'
 
+
+  // Phase v4.1-1.3a — diagnostics route through scope logger.
+  private log: Logger = noopLogger()
   private client:          any    = null
   private healthy                 = false
   private sessionPath:     string
@@ -43,6 +47,8 @@ export class WhatsAppAdapter implements ChannelAdapter {
     this.allowedNumbers = raw ? new Set(raw.split(',').map(s => s.trim()).filter(Boolean)) : new Set()
     this.businessApiKey = process.env.WHATSAPP_BUSINESS_API_KEY ?? ''
   }
+
+  attachLogger(logger: Logger): void { this.log = logger }
 
   // ── Lifecycle ──────────────────────────────────────────────
 
@@ -59,7 +65,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
       Client    = wwebjs.Client
       LocalAuth = wwebjs.LocalAuth
     } catch (e: any) {
-      console.log('[WhatsApp] Disabled — whatsapp-web.js not available:', e.message)
+      this.log.info(`Disabled — whatsapp-web.js not available:${e.message}`)
       return
     }
 
@@ -73,22 +79,22 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
     // QR code for first-time auth
     this.client.on('qr', (qr: string) => {
-      console.log('[WhatsApp] Scan this QR code with your WhatsApp mobile app:')
+      this.log.info('Scan this QR code with your WhatsApp mobile app:')
       try {
         const qrcode = require('qrcode-terminal')
         qrcode.generate(qr, { small: true })
       } catch {
-        console.log('[WhatsApp] QR (raw):', qr)
+        this.log.info(`QR (raw):${qr}`)
       }
     })
 
     this.client.on('authenticated', () => {
-      console.log('[WhatsApp] Session authenticated — session persisted at', this.sessionPath)
+      this.log.info(`Session authenticated — session persisted at${this.sessionPath}`)
     })
 
     this.client.on('ready', () => {
       this.healthy = true
-      console.log('[WhatsApp] Client ready')
+      this.log.info('Client ready')
       gateway.registerChannel('whatsapp', async (msg) => {
         await this.send(msg.channelId, msg.text)
         return true
@@ -97,7 +103,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
     this.client.on('disconnected', (reason: string) => {
       this.healthy = false
-      console.log('[WhatsApp] Disconnected:', reason)
+      this.log.info(`Disconnected:${reason}`)
     })
 
     this.client.on('message', async (msg: any) => {
@@ -110,14 +116,14 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
       const response = await this.processMessage(msg.from, senderNumber, msg.body)
       await msg.reply(response).catch((e: Error) =>
-        console.error('[WhatsApp] reply error:', e.message),
+        this.log.error(`reply error:${e.message}`),
       )
     })
 
     try {
       await this.client.initialize()
     } catch (e: any) {
-      console.log('[WhatsApp] Disabled — check WHATSAPP_SESSION_PATH:', e.message)
+      this.log.info(`Disabled — check WHATSAPP_SESSION_PATH:${e.message}`)
       this.healthy = false
     }
   }
@@ -129,7 +135,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
       await this.client.destroy().catch(() => {})
       this.client = null
     }
-    console.log('[WhatsApp] Disconnected')
+    this.log.info('Disconnected')
   }
 
   async send(target: string, message: string): Promise<void> {
@@ -137,7 +143,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
     // Ensure target has @c.us suffix
     const chatId = target.includes('@') ? target : `${target.replace('+', '')}@c.us`
     await this.client.sendMessage(chatId, message).catch((e: Error) =>
-      console.error('[WhatsApp] send error:', e.message),
+      this.log.error(`send error:${e.message}`),
     )
   }
 
@@ -160,7 +166,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
         timestamp: Date.now(),
       })
     } catch (e: any) {
-      console.error('[WhatsApp] routeMessage error:', e.message)
+      this.log.error(`routeMessage error:${e.message}`)
       return '❌ Something went wrong. Try again.'
     }
   }

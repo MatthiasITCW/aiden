@@ -30,10 +30,13 @@ import * as path from 'node:path';
 import * as os   from 'node:os';
 
 import type { SlashCommand, SlashCommandContext } from '../commandRegistry';
+import { renderTable } from '../table';
 import {
   createJob, listJobs, getJob,
   pauseJob, resumeJob, deleteJob, triggerJob,
   awaitPendingSaves,
+  getDiagnostics,
+  AIDEN_CRON_BUILD,
   type CronJob,
 } from '../../../core/cronManager';
 
@@ -90,9 +93,15 @@ function shortId(id: string): string {
   return id.length <= 8 ? id : id.slice(0, 8);
 }
 
-function colourResult(ctx: SlashCommandContext, result?: 'ok' | 'fail' | null): string {
-  if (result === 'ok')   return '✓';
-  if (result === 'fail') return '✗';
+function colourResult(
+  ctx: SlashCommandContext,
+  result?: 'ok' | 'fail' | 'warn' | 'error' | 'timeout' | null,
+): string {
+  if (result === 'ok')      return '✓';
+  if (result === 'warn')    return '∼';
+  if (result === 'fail'
+   || result === 'error'
+   || result === 'timeout') return '✗';
   return '·';
 }
 
@@ -150,26 +159,20 @@ function cmdList(ctx: SlashCommandContext): void {
     schedule:  j.schedule,
     enabled:   j.enabled ? 'on' : 'off',
     lastRun:   fmtTime(j.lastRun),
-    glyph:     colourResult(ctx, j.lastResult),
+    result:    j.lastResult ?? '—',
   }));
-  const widths = {
-    id:       Math.max(2, ...rows.map(r => r.id.length)),
-    name:     Math.max(4, ...rows.map(r => r.name.length)),
-    schedule: Math.max(8, ...rows.map(r => r.schedule.length)),
-    enabled:  3,
-    lastRun:  Math.max(7, ...rows.map(r => r.lastRun.length)),
-  };
   ctx.display.write(
-    `  ${'ID'.padEnd(widths.id)}  ${'NAME'.padEnd(widths.name)}  ` +
-    `${'SCHEDULE'.padEnd(widths.schedule)}  EN   ${'LAST RUN'.padEnd(widths.lastRun)}  R\n`,
+    renderTable(rows, [
+      { key: 'id',       header: 'ID',       align: 'left'  },
+      { key: 'name',     header: 'Name',     align: 'left', flex: true },
+      { key: 'schedule', header: 'Schedule', align: 'left'  },
+      { key: 'enabled',  header: 'En',       align: 'center',
+        color: (v) => (v === 'on' ? 'success' : 'muted') },
+      { key: 'lastRun',  header: 'Last Run', align: 'left'  },
+      { key: 'result',   header: 'R',        align: 'center',
+        color: (v) => (v === 'ok' ? 'success' : v === 'fail' ? 'error' : 'muted') },
+    ]),
   );
-  for (const r of rows) {
-    ctx.display.write(
-      `  ${r.id.padEnd(widths.id)}  ${r.name.padEnd(widths.name)}  ` +
-      `${r.schedule.padEnd(widths.schedule)}  ${r.enabled.padEnd(3)}  ` +
-      `${r.lastRun.padEnd(widths.lastRun)}  ${r.glyph}\n`,
-    );
-  }
 }
 
 async function cmdRun(ctx: SlashCommandContext, args: string[]): Promise<void> {
@@ -234,6 +237,32 @@ function cmdDisable(ctx: SlashCommandContext, args: string[]): void {
   else                  ctx.display.printError('Disable failed.');
 }
 
+async function cmdStatus(ctx: SlashCommandContext): Promise<void> {
+  const diag = await getDiagnostics();
+  ctx.display.info(`Aiden cron — ${AIDEN_CRON_BUILD}`);
+  ctx.display.write(`  schema version : ${diag.schemaVersion}\n`);
+  ctx.display.write(`  tick interval  : ${diag.tickMs}ms\n`);
+  ctx.display.write(`  fire timeout   : ${diag.timeoutMs}ms\n`);
+  ctx.display.write(`  heartbeat      : ${diag.heartbeatActive ? 'active' : 'idle'}\n`);
+  ctx.display.write(`  last heartbeat : ${diag.lastHeartbeatAt ?? 'never'}\n`);
+  ctx.display.write(`  skipped ticks  : ${diag.skippedTicks}\n`);
+  ctx.display.write(`  fires (boot)   : ${diag.firesStarted}\n`);
+  ctx.display.write(`  lock           : ${diag.lock.held ? 'held' : 'free'} (${diag.lock.path})\n`);
+  if (diag.recentFires.length > 0) {
+    ctx.display.write(`  recent fires:\n`);
+    for (const r of diag.recentFires) {
+      const tag = r.status === 'ok' ? '✓'
+                : r.status === 'warn' ? '∼'
+                : r.status === 'timeout' ? 'T'
+                : '✗';
+      ctx.display.write(
+        `    ${tag} [${r.jobId.slice(0, 8)}]  ${fmtTime(r.startedAt)}  ${r.durationMs}ms` +
+        `${r.error ? '  ' + r.error.slice(0, 60) : ''}\n`,
+      );
+    }
+  }
+}
+
 async function cmdRemove(ctx: SlashCommandContext, args: string[]): Promise<void> {
   const job = resolveJob(args[0] ?? '');
   if (!job) { ctx.display.printError(`Job not found: ${args[0] ?? '(missing)'}`); return; }
@@ -275,6 +304,7 @@ export const cron: SlashCommand = {
       case 'list':  case 'ls':    cmdList         (ctx);       break;
       case 'run':   case 'trigger': await cmdRun  (ctx, rest); break;
       case 'show':  case 'info':  cmdShow         (ctx, rest); break;
+      case 'status':              await cmdStatus (ctx);       break;
       case 'logs':  case 'log':   await cmdLogs   (ctx, rest); break;
       case 'enable':              cmdEnable       (ctx, rest); break;
       case 'disable': case 'pause': cmdDisable    (ctx, rest); break;
@@ -290,6 +320,7 @@ export const cron: SlashCommand = {
         ctx.display.write('  /cron logs <id|name>\n');
         ctx.display.write('  /cron enable|disable <id|name>\n');
         ctx.display.write('  /cron remove <id|name>\n');
+        ctx.display.write('  /cron status                  (v4.1-cron diagnostics)\n');
         ctx.display.dim('Schedules: cron expr ("0 9 * * *"), interval ("every 2m"), one-shot ISO.');
         break;
       default:
