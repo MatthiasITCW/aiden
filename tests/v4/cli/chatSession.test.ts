@@ -45,6 +45,7 @@ function mkAgent(overrides: Partial<{
 }> = {}) {
   const calls: Message[][] = [];
   const setProviderCalls: unknown[] = [];
+  const setActiveModelCalls: Array<{ providerId: string; modelId: string }> = [];
   const agent = {
     runConversation: vi.fn(async (history: Message[]) => {
       calls.push(history);
@@ -72,8 +73,16 @@ function mkAgent(overrides: Partial<{
     setProvider: vi.fn((adapter: unknown) => {
       setProviderCalls.push(adapter);
     }),
+    // Phase v4.1.2-bug2: chatSession.setProvider now also calls
+    // agent.setActiveModel(...) so the prompt's Runtime slot stays in
+    // lockstep with the routed provider. Mock records each call so
+    // the wire-through is testable.
+    setActiveModel: vi.fn((providerId: string, modelId: string) => {
+      setActiveModelCalls.push({ providerId, modelId });
+      return true;
+    }),
   };
-  return { agent, calls, setProviderCalls };
+  return { agent, calls, setProviderCalls, setActiveModelCalls };
 }
 
 function mkSessionManager() {
@@ -381,7 +390,7 @@ describe('ChatSession.run', () => {
   });
 
   it('setProvider hot-swaps the agent provider', async () => {
-    const { agent, setProviderCalls } = mkAgent();
+    const { agent, setProviderCalls, setActiveModelCalls } = mkAgent();
     const resolver = {
       resolve: vi.fn(async () => ({ call: vi.fn(), tag: 'new-adapter' })),
       describe: vi.fn(),
@@ -399,6 +408,12 @@ describe('ChatSession.run', () => {
     expect(setProviderCalls).toHaveLength(1);
     expect(session.getCurrentProvider()).toBe('anthropic');
     expect(session.getCurrentModel()).toBe('claude-opus-4-7');
+    // Phase v4.1.2-bug2: also asserts the Runtime-slot wire-through.
+    // setProvider must call setActiveModel after the adapter swap so
+    // the system prompt's `## Runtime` slot stays in lockstep.
+    expect(setActiveModelCalls).toEqual([
+      { providerId: 'anthropic', modelId: 'claude-opus-4-7' },
+    ]);
   });
 
   it('yoloMode flips approval engine to off at boot', async () => {

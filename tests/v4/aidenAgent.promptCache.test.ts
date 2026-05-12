@@ -102,6 +102,96 @@ describe('AidenAgent · system prompt cache (Phase 16b.4)', () => {
     expect(agent.setPersonalityOverlay('X')).toBe(false);
   });
 
+  // ── Phase v4.1.2-bug2: setActiveModel ────────────────────────────────
+  //
+  // Mirror of the setPersonalityOverlay tests. The bug being guarded:
+  // booting on (groq, llama-3.3-70b-versatile) and switching to
+  // (chatgpt-plus, gpt-5.5) used to leave the system prompt's `##
+  // Runtime` slot self-describing as the boot provider for the rest of
+  // the session, even though real requests routed correctly.
+
+  it('setActiveModel updates the Runtime slot and triggers a rebuild', async () => {
+    const paths = await mkPaths();
+    const agent = new AidenAgent({
+      provider: new MockProviderAdapter([]),
+      tools: [],
+      toolExecutor: async () => ({ id: '1', name: 'noop', result: null }),
+      promptBuilder: new PromptBuilder(),
+      promptBuilderOptions: {
+        paths,
+        platform:   'linux',
+        providerId: 'groq',
+        modelId:    'llama-3.3-70b-versatile',
+      },
+    });
+    const before = await agent.getSystemPromptForDebug();
+    expect(before).toContain('Provider: groq');
+    expect(before).toContain('Model: llama-3.3-70b-versatile');
+
+    const changed = agent.setActiveModel('chatgpt-plus', 'gpt-5.5');
+    expect(changed).toBe(true);
+
+    const after = await agent.getSystemPromptForDebug();
+    expect(after).toContain('Provider: chatgpt-plus');
+    expect(after).toContain('Model: gpt-5.5');
+    // Stale identifiers must NOT survive into the rebuilt prompt.
+    expect(after).not.toContain('Provider: groq');
+    expect(after).not.toContain('Model: llama-3.3-70b-versatile');
+    // SOUL.md (slot 1) is preserved — the swap is scoped to Runtime.
+    expect(after).toContain('slot 1');
+  });
+
+  it('setActiveModel returns false when both ids are unchanged (no rebuild)', async () => {
+    const paths = await mkPaths();
+    const builder = new PromptBuilder();
+    const buildSpy = vi.spyOn(builder, 'build');
+    const agent = new AidenAgent({
+      provider: new MockProviderAdapter([]),
+      tools: [],
+      toolExecutor: async () => ({ id: '1', name: 'noop', result: null }),
+      promptBuilder: builder,
+      promptBuilderOptions: {
+        paths,
+        platform:   'linux',
+        providerId: 'chatgpt-plus',
+        modelId:    'gpt-5.5',
+      },
+    });
+    // Prime the cache.
+    await agent.getSystemPromptForDebug();
+    expect(buildSpy).toHaveBeenCalledTimes(1);
+
+    // Same ids → no-op, no rebuild on the next get.
+    expect(agent.setActiveModel('chatgpt-plus', 'gpt-5.5')).toBe(false);
+    await agent.getSystemPromptForDebug();
+    expect(buildSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('setActiveModel returns true when only one of provider/model changes', async () => {
+    const paths = await mkPaths();
+    const agent = new AidenAgent({
+      provider: new MockProviderAdapter([]),
+      tools: [],
+      toolExecutor: async () => ({ id: '1', name: 'noop', result: null }),
+      promptBuilder: new PromptBuilder(),
+      promptBuilderOptions: {
+        paths,
+        platform:   'linux',
+        providerId: 'anthropic',
+        modelId:    'claude-opus-4-7',
+      },
+    });
+    // Same provider, different model.
+    expect(agent.setActiveModel('anthropic', 'claude-haiku-4-5')).toBe(true);
+    const after1 = await agent.getSystemPromptForDebug();
+    expect(after1).toContain('Model: claude-haiku-4-5');
+    // Different provider, same model (theoretically possible if two
+    // providers share modelIds — claude-pro / anthropic do today).
+    expect(agent.setActiveModel('claude-pro', 'claude-haiku-4-5')).toBe(true);
+    const after2 = await agent.getSystemPromptForDebug();
+    expect(after2).toContain('Provider: claude-pro');
+  });
+
   it('invalidateSystemPromptCache forces the next runConversation to rebuild', async () => {
     const paths = await mkPaths();
     const builder = new PromptBuilder();

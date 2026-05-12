@@ -363,6 +363,38 @@ export class AidenAgent {
   }
 
   /**
+   * Phase v4.1.2-bug2: replace the active provider/model fed into the
+   * `## Runtime` slot of the system prompt. Mirrors
+   * `setPersonalityOverlay` shape — mutate the cached PromptBuilder
+   * options + null the system-prompt cache so the next runConversation
+   * rebuilds with fresh values. Returns `true` when at least one of
+   * `providerId`/`modelId` actually changed; `false` is a no-op
+   * (caller may skip downstream signalling).
+   *
+   * This is NOT a dirty-bit invalidation — provider/model are
+   * in-memory field updates, not disk-backed reloads. The existing
+   * MemoryFile dirty-bit (`memory|user|soul`) governs file reload
+   * semantics and is intentionally not extended here.
+   *
+   * Called by chatSession.setProvider() after the adapter swap so the
+   * prompt's self-description stays in lockstep with the routed
+   * provider. Without this, `/model groq → chatgpt-plus` swaps the
+   * adapter (real requests route correctly) but the prompt keeps
+   * claiming "Provider: groq" for the rest of the session.
+   */
+  setActiveModel(providerId: string, modelId: string): boolean {
+    const cur = this.promptBuilderOptions;
+    if (cur?.providerId === providerId && cur?.modelId === modelId) return false;
+    this.promptBuilderOptions = {
+      ...(cur ?? ({} as PromptBuilderOptions)),
+      providerId,
+      modelId,
+    };
+    this.cachedSystemPrompt = null;
+    return true;
+  }
+
+  /**
    * Build (or return the cached) system prompt without driving the
    * provider. Powers the `/debug-prompt` command. Returns `null` when no
    * `PromptBuilder` is wired.

@@ -46,7 +46,10 @@ describe('Phase 21 #5 — /model switch OAuth call-chain integration', () => {
     // Most fields are intentionally undefined — setProvider doesn't read
     // them, but ChatSession's constructor accepts the options bag whole.
     const stub: any = {
-      agent: { setProvider: () => undefined },
+      // Phase v4.1.2-bug2: chatSession.setProvider now also calls
+      // agent.setActiveModel(...) so the prompt's Runtime slot stays
+      // in lockstep with the routed provider. Stub it as a no-op.
+      agent: { setProvider: () => undefined, setActiveModel: () => true },
       display: { write() {}, success() {}, warn() {}, info() {}, dim() {} },
       commandRegistry: { exec: () => Promise.resolve({}) },
       callbacks: {},

@@ -300,6 +300,11 @@ export class ChatSession implements ChatSessionLike {
       paths: this.opts.paths,
     });
     this.opts.agent.setProvider(adapter);
+    // Phase v4.1.2-bug2: keep the prompt's Runtime slot in lockstep
+    // with the routed provider. Without this, the agent's adapter
+    // swaps correctly but its system prompt keeps self-describing as
+    // the boot-time provider/model for the rest of the session.
+    this.opts.agent.setActiveModel(providerId, modelId);
     this.currentProviderId = providerId;
     this.currentModelId = modelId;
   }
