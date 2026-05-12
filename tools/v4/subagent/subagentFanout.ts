@@ -114,6 +114,33 @@ export function makeSubagentFanoutTool(
             type: 'array',
             description:
               'Per-child task list (partition mode only). Length must equal n.',
+            // Schema mirrors PartitionTask interface in
+            // core/v4/subagent/fanout.ts:70-75. If you change one, change
+            // the other. OpenAI Codex backend strictly validates schemas
+            // and rejects `type: "array"` declarations missing `items`,
+            // so the inner shape must be explicit here.
+            items: {
+              type: 'object',
+              description: 'One unit of work for a partition-mode child.',
+              properties: {
+                goal: {
+                  type: 'string',
+                  description:
+                    'The task this child should accomplish.',
+                },
+                context: {
+                  type: 'string',
+                  description:
+                    'Optional shared context for the child.',
+                },
+                role: {
+                  type: 'string',
+                  description:
+                    'Optional role tag, diagnostic only.',
+                },
+              },
+              required: ['goal'],
+            },
           },
           merge: {
             type: 'string',

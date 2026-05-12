@@ -332,7 +332,6 @@ We're shipping honest. Things that work, things that don't:
 
 **Not in v4.0:**
 
-- Subagent fanout / parallel agent swarm — single-loop only; deferred to v4.x
 - OCR — not bundled (vision-loop screen capture works, but no Tesseract)
 - Full agentskills.io ecosystem install — held pending license review
 - Docker sandbox backend — dropped in v4 rewrite
@@ -733,7 +732,6 @@ aiden                  # CLI
 
 - **npm package renamed** — `aiden-os` → `aiden-runtime`. Run `npm uninstall -g aiden-os && npm install -g aiden-runtime`.
 - **Slash commands consolidated** — v3's `/switch`, `/budget`, `/memory`, `/profile`, `/permissions`, `/sandbox`, `/retry`, `/failed`, `/publish` are gone. Use `/model`, `/usage`, `/identity`, `/yolo` for equivalent functionality. See `/help` for the v4 list.
-- **Subagent fanout removed** — v4 is single-loop only; subagent support deferred to v4.x.
 - **Docker sandbox dropped** — `AIDEN_SANDBOX_MODE` no longer applies. Tools run on the host. The `tirithScanner` secret/PII guard, `ssrfProtection`, and tiered approval engine remain as the safety layer.
 - **Skill registry install changed** — auto-fetch from external repos held pending license review. Skills install via `/skills install <local-path-or-url>` only at v4.0.
 - **Config compatible** — most environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, etc.) are recognised as-is. Copy your existing `.env` and Aiden picks them up.
