@@ -1,6 +1,6 @@
 // core/v4/logger/index.ts — Phase v4.1-1.3a barrel export.
 
-export { CoreLogger, type Logger, type LoggerSink, type LogLevel, type LogRecord } from './logger';
+export { CoreLogger, type Logger, type LoggerSink, type LogLevel, type LogRecord, type LoggerSinkHealth } from './logger';
 export {
   createBootLogger,
   noopLogger,

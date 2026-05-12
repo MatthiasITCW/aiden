@@ -83,6 +83,10 @@ import {
 } from '../../moat/skillTeacher';
 import { SkillMiner } from '../../core/v4/skillMining/skillMiner';
 import type { MinedCandidate } from '../../core/v4/skillMining/candidateStore';
+import {
+  createSubsystemHealthRegistry,
+  SubsystemHealthTracker,
+} from '../../core/v4/subsystemHealth';
 import { isMcpServeMode } from './uiBuild';
 import { MemoryGuard } from '../../moat/memoryGuard';
 import { SSRFProtection } from '../../moat/ssrfProtection';
@@ -949,12 +953,31 @@ export async function buildAgentRuntime(
       } as any);
     },
   };
+  // Phase v4.1.2-slice3: subsystem-health registry. AidenAgent owns
+  // the one instance (constructor-injected, not a singleton — so
+  // parallel tests don't cross-contaminate). Per-subsystem trackers
+  // hang off the registry and are passed into each subsystem's
+  // constructor so they can record success/failure as it happens.
+  // `aiden doctor` reads `agent.subsystemHealthRegistry.snapshot()`.
+  const subsystemHealthRegistry = createSubsystemHealthRegistry();
+  const skillTeacherHealth = new SubsystemHealthTracker('skill-teacher');
+  const skillMinerHealth   = new SubsystemHealthTracker('skill-miner');
+  subsystemHealthRegistry.register(
+    'skill-teacher',
+    () => skillTeacherHealth.snapshot(),
+  );
+  subsystemHealthRegistry.register(
+    'skill-miner',
+    () => skillMinerHealth.snapshot(),
+  );
+
   const skillTeacher = new SkillTeacher(
     skillLoader,
     skillManageProxy,
     skillTeacherTier,
     undefined,
     (name) => toolRegistry.get(name),
+    skillTeacherHealth,
   );
 
   // ── Tool executor with full Phase 9 + 10 context ─────────────────────
@@ -1050,7 +1073,15 @@ export async function buildAgentRuntime(
   // mutate skill state from inside JSON-RPC handling).
   const skillMiner = isMcpServeMode()
     ? undefined
-    : new SkillMiner({ auxiliaryClient });
+    : new SkillMiner({ auxiliaryClient, healthTracker: skillMinerHealth });
+
+  // Phase v4.1.2-slice3: the structured CoreLogger isn't yet plumbed
+  // through buildAgentRuntime — it's created via factory at boot but
+  // not passed in here. We leave its sink-health surface available
+  // via `CoreLogger.getSinkHealth()` for any caller that holds the
+  // instance, and the registry stays empty for the logger slot until
+  // the structured-logger wiring catches up. The registry mechanism
+  // itself is exercised end-to-end by skill-teacher and skill-miner.
 
   // ── Build agent with all moat layers attached ────────────────────────
   const agent = new AidenAgent({
@@ -1063,6 +1094,7 @@ export async function buildAgentRuntime(
     honestyEnforcement,
     skillTeacher,
     skillMiner,
+    subsystemHealthRegistry,
     onSkillCandidate: (candidate: MinedCandidate) => {
       try {
         callbacks.onSkillCandidate?.(candidate);

@@ -114,6 +114,14 @@ export interface AidenAgentOptions {
   /** Hard cap on iterations through the loop. Default 90. */
   maxTurns?:               number;
   fallback?:               FallbackStrategy;
+  /**
+   * Phase v4.1.2-slice3 telemetry. Optional aggregator the caller
+   * (aidenCLI) constructs and passes to subsystem trackers. Aiden
+   * exposes the registry as a public field so `aiden doctor` can
+   * fetch the snapshot via the same agent handle other diagnostic
+   * paths use. Subsystems work fine if the registry is undefined.
+   */
+  subsystemHealthRegistry?: import('./subsystemHealth').SubsystemHealthRegistry;
   /** Observability — fired before and after each tool call. */
   onToolCall?: (
     call:    ToolCallRequest,
@@ -251,6 +259,14 @@ export class AidenAgent {
   // type the previous representation grew when SOUL.md joined the list.
   private memoryDirty:          Set<MemoryFile> = new Set();
 
+  /**
+   * Phase v4.1.2-slice3: public field so `aiden doctor` can read
+   * subsystem-health snapshots via the live agent handle. Undefined
+   * when the caller didn't wire a registry (subsystems then operate
+   * without telemetry — back-compat).
+   */
+  public readonly subsystemHealthRegistry?: import('./subsystemHealth').SubsystemHealthRegistry;
+
   /** Process-scoped tracker metrics for `/doctor`. */
   private readonly skillEnforcementMetrics: SkillEnforcementMetrics = {
     recovered: 0, failed: 0, armed: 0, preArmed: 0,
@@ -291,6 +307,12 @@ export class AidenAgent {
     this.refreshMemorySnapshot    = opts.refreshMemorySnapshot;
     this.onMemoryRefresh          = opts.onMemoryRefresh;
     this.lookupSkillRequiredTools = opts.lookupSkillRequiredTools;
+    // Phase v4.1.2-slice3: optional health registry (constructor-
+    // injected per the slice3 decision tree — no singleton). When
+    // wired, the caller already plumbed trackers into each subsystem
+    // via their own constructors; we just hold the read handle.
+    (this as { subsystemHealthRegistry?: import('./subsystemHealth').SubsystemHealthRegistry })
+      .subsystemHealthRegistry = opts.subsystemHealthRegistry;
   }
 
   // ── Public method surface ────────────────────────────────────────────

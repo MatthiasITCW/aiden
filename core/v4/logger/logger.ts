@@ -58,6 +58,32 @@ export interface LoggerSink {
   write(record: LogRecord): void;
   /** Optional graceful close (flush buffers, close file handles). */
   close?(): Promise<void> | void;
+  /**
+   * Phase v4.1.2-slice3 telemetry. Optional stable id (e.g.
+   * 'file:/aiden/logs/agent.log', 'stderr', 'memory:test'). When set,
+   * the per-sink write-failure counter on CoreLogger is keyed by this
+   * name and `aiden doctor` renders it. Sinks without a name still
+   * work — the counter falls back to a synthetic id.
+   */
+  readonly name?: string;
+}
+
+/**
+ * Phase v4.1.2-slice3: per-sink write-failure record. The Logger
+ * itself can't surface failures through its own log lines (would
+ * recurse), so it keeps a counter per sink and exposes it via
+ * {@link CoreLogger.getSinkHealth}. `aiden doctor` reads the counter
+ * directly and renders one row per degraded sink.
+ */
+export interface LoggerSinkHealth {
+  /** Stable id from `LoggerSink.name` or a synthetic 'sink:<idx>'. */
+  name:        string;
+  /** Total `sink.write(...)` calls. */
+  totalWrites: number;
+  /** Number that threw. */
+  failures:    number;
+  /** Length-capped message of the most recent failure. */
+  lastError?: { message: string; at: Date };
 }
 
 /** Public consumer-facing interface. */
@@ -88,6 +114,14 @@ export interface Logger {
 
   /** Test seam — fully detach all sinks. Subsequent writes drop silently. */
   detachAll(): void;
+
+  /**
+   * Phase v4.1.2-slice3: read the per-sink write-failure counters.
+   * `aiden doctor` calls this to render its Subsystem health section.
+   * Returns one entry per sink (in attachment order); sinks with zero
+   * failures still appear so doctor can show the totalWrites.
+   */
+  getSinkHealth(): LoggerSinkHealth[];
 }
 
 /**
@@ -95,12 +129,27 @@ export interface Logger {
  * current scope; child loggers share the same sink list (so updating
  * the level / detaching at the root affects everything).
  */
+/**
+ * Phase v4.1.2-slice3: internal per-sink counter the root logger
+ * maintains. Lives next to the sinks array so child loggers share it.
+ */
+interface SinkCounter {
+  totalWrites: number;
+  failures:    number;
+  lastError?:  { message: string; at: Date };
+}
+
 export class CoreLogger implements Logger {
   private level: LogLevel;
   private readonly sinks: LoggerSink[];
   private readonly scope: string;
   /** `null` means "use my parent's sinks" — the root holds the array. */
-  private readonly sinksOwner: { sinks: LoggerSink[]; level: LogLevel };
+  private readonly sinksOwner: {
+    sinks:    LoggerSink[];
+    level:    LogLevel;
+    /** Phase v4.1.2-slice3: per-sink write counters, parallel to sinks. */
+    counters: SinkCounter[];
+  };
 
   /**
    * Construct a root logger. Use `child(segment)` for sub-loggers.
@@ -110,7 +159,11 @@ export class CoreLogger implements Logger {
     this.scope      = opts.scope ?? '';
     this.sinks      = opts.sinks;
     this.level      = opts.level ?? 'debug';
-    this.sinksOwner = { sinks: this.sinks, level: this.level };
+    this.sinksOwner = {
+      sinks:    this.sinks,
+      level:    this.level,
+      counters: opts.sinks.map(() => ({ totalWrites: 0, failures: 0 })),
+    };
   }
 
   /** Internal — used by `child()` to share state with the root. */
@@ -142,7 +195,23 @@ export class CoreLogger implements Logger {
   }
 
   detachAll(): void {
-    this.sinksOwner.sinks.length = 0;
+    this.sinksOwner.sinks.length    = 0;
+    this.sinksOwner.counters.length = 0;
+  }
+
+  getSinkHealth(): LoggerSinkHealth[] {
+    const out: LoggerSinkHealth[] = [];
+    for (let i = 0; i < this.sinksOwner.sinks.length; i += 1) {
+      const sink    = this.sinksOwner.sinks[i];
+      const counter = this.sinksOwner.counters[i] ?? { totalWrites: 0, failures: 0 };
+      out.push({
+        name:        sink.name ?? `sink:${i}`,
+        totalWrites: counter.totalWrites,
+        failures:    counter.failures,
+        ...(counter.lastError ? { lastError: counter.lastError } : {}),
+      });
+    }
+    return out;
   }
 
   debug(msg: string, ctx?: Record<string, unknown>): void { this.write('debug', msg, ctx); }
@@ -160,9 +229,27 @@ export class CoreLogger implements Logger {
       ctx,
     };
     // Sinks must not throw — the helpers in ./sinks/* all wrap their
-    // I/O in try/catch. Be defensive anyway.
-    for (const s of this.sinksOwner.sinks) {
-      try { s.write(record); } catch { /* logging must not break callers */ }
+    // I/O in try/catch. Be defensive anyway. Phase v4.1.2-slice3:
+    // bump the per-sink counter and capture the most recent failure
+    // message so `aiden doctor` can render it. The counter itself is
+    // never logged through this logger (would recurse).
+    for (let i = 0; i < this.sinksOwner.sinks.length; i += 1) {
+      const s = this.sinksOwner.sinks[i];
+      const c = this.sinksOwner.counters[i];
+      if (c) c.totalWrites += 1;
+      try {
+        s.write(record);
+      } catch (err) {
+        if (c) {
+          c.failures += 1;
+          const msg = err instanceof Error ? err.message : String(err);
+          c.lastError = {
+            message: msg.length > 200 ? msg.slice(0, 197) + '...' : msg,
+            at:      new Date(),
+          };
+        }
+        /* logging must not break callers */
+      }
     }
   }
 }

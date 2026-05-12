@@ -72,6 +72,75 @@ export interface DoctorOptions {
    * provider round-trips can legitimately take 1-2 seconds.
    */
   livenessTimeoutMs?: number;
+  /**
+   * Phase v4.1.2-slice3: in-process subsystem-health surface. When
+   * provided, the doctor renders a "Subsystem health" block; when
+   * omitted (standalone `aiden doctor` from a fresh process), the
+   * section is skipped — there's no live agent to read state from.
+   *
+   * In-REPL doctor invocations pass `agent.subsystemHealthRegistry`
+   * here; standalone CLI invocations don't have one.
+   */
+  subsystemHealthRegistry?: import('../../core/v4/subsystemHealth').SubsystemHealthRegistry;
+}
+
+/**
+ * Phase v4.1.2-slice3: render the Subsystem health section. Decision
+ * tree (per slice3 Phase 3 Q4):
+ *   - registry undefined → render nothing (no live state to report)
+ *   - all subsystems healthy → one-line green summary
+ *   - any degradation → expand block with last-error per failed sub
+ *
+ * The Honesty layer is intentionally listed as "(not instrumented yet)"
+ * when the expanded block fires, because the audit determined the
+ * pure-pattern path has no I/O failure surface today.
+ */
+export function renderSubsystemHealthSection(
+  registry: import('../../core/v4/subsystemHealth').SubsystemHealthRegistry | undefined,
+): string {
+  if (!registry) return '';
+  const snaps = registry.snapshot();
+  if (snaps.length === 0) return '';
+
+  const degraded = snaps.filter((s) => s.totalErrors > 0);
+  if (degraded.length === 0) {
+    return `\nSubsystem health: all green (${snaps.length} subsystems instrumented)\n`;
+  }
+
+  // Expanded form. Per-subsystem rows:
+  //   ✓ name        N calls, 0 errors
+  //   ✗ name        N calls, E errors  (last <duration> ago: "message")
+  //   - honesty     (not instrumented yet)
+  const lines: string[] = ['\nSubsystem health'];
+  for (const s of snaps) {
+    const mark = s.totalErrors > 0 ? 'x' : 'ok';
+    const stats = `${s.totalCalls} call${s.totalCalls === 1 ? '' : 's'}, ${s.totalErrors} error${s.totalErrors === 1 ? '' : 's'}`;
+    if (s.lastError) {
+      const ago = humanAge(Date.now() - s.lastError.at.getTime());
+      const streak = s.lastError.consecutive > 1
+        ? ` (${s.lastError.consecutive} consecutive)`
+        : '';
+      lines.push(
+        `  [${mark}] ${s.subsystem.padEnd(16)} ${stats}${streak}  (last ${ago} ago: "${s.lastError.message}")`,
+      );
+    } else {
+      lines.push(`  [${mark}] ${s.subsystem.padEnd(16)} ${stats}`);
+    }
+  }
+  // Slice3 audit decision: HonestyEnforcement was deliberately not
+  // instrumented (pure-pattern path has no failure surface). Surface
+  // that explicitly so users know the gap is known, not forgotten.
+  lines.push(`  [-]  honesty          (not instrumented yet)`);
+  lines.push('');
+  return lines.join('\n');
+}
+
+function humanAge(ms: number): string {
+  if (ms < 1_000)       return `${ms}ms`;
+  if (ms < 60_000)      return `${(ms / 1_000).toFixed(0)}s`;
+  if (ms < 3_600_000)   return `${Math.floor(ms / 60_000)}m`;
+  if (ms < 86_400_000)  return `${Math.floor(ms / 3_600_000)}h`;
+  return `${Math.floor(ms / 86_400_000)}d`;
 }
 
 const DEFAULT_TIMEOUT_MS = 3_000;
@@ -890,6 +959,12 @@ export async function runDoctorCli(opts?: DoctorOptions): Promise<DoctorReport> 
     process.stdout.write(renderProviderLivenessSection(results, summary));
     livenessFailed = summary.red > 0;
   }
+
+  // Phase v4.1.2-slice3: subsystem-health surface. Renders only when
+  // a registry was passed (in-REPL doctor); standalone CLI doctor has
+  // no live agent so the section is omitted.
+  const subsystemBlock = renderSubsystemHealthSection(opts?.subsystemHealthRegistry);
+  if (subsystemBlock) process.stdout.write(subsystemBlock);
 
   // Liveness reds count toward the overall exit code so CI / scripts
   // can `aiden doctor --providers && deploy`.

@@ -47,6 +47,7 @@ import type {
 } from '../core/v4/skillLoader';
 import type { ToolHandler } from '../core/v4/toolRegistry';
 import type { ToolCallRequest } from '../providers/v4/types';
+import type { SubsystemHealthTracker } from '../core/v4/subsystemHealth';
 
 export type SkillTeacherTier = 'off' | 'tier_3_propose' | 'tier_4_auto';
 
@@ -144,6 +145,14 @@ export class SkillTeacher {
   /** Last quality file load path (for save). */
   private qualityPath: string;
 
+  /**
+   * Phase v4.1.2-slice3 telemetry. Optional — when undefined the
+   * teacher behaves identically to the pre-slice3 path. Surface for
+   * `aiden doctor`: skillManager.execute() throws + quality-data
+   * I/O failures (parse-on-load + write-on-save).
+   */
+  private readonly healthTracker?: SubsystemHealthTracker;
+
   constructor(
     private readonly skillLoader: SkillLoader,
     private readonly skillManager: SkillManageHandler,
@@ -156,11 +165,13 @@ export class SkillTeacher {
     private readonly resolveHandler?: (
       name: string,
     ) => ToolHandler | undefined,
+    healthTracker?: SubsystemHealthTracker,
   ) {
     this.tier = tier;
     this.qualityPath =
       qualityFilePath ??
       path.join(process.cwd(), '.aiden-skill-quality.json');
+    this.healthTracker = healthTracker;
   }
 
   setTier(tier: SkillTeacherTier): void {
@@ -269,8 +280,10 @@ export class SkillTeacher {
         },
         {},
       );
+      this.healthTracker?.recordSuccess();
       return { created: true, skillName: proposal.proposedName };
     } catch (e) {
+      this.healthTracker?.recordFailure(e);
       const msg = e instanceof Error ? e.message : String(e);
       return { created: false, reason: `create_failed: ${msg}` };
     }
@@ -417,8 +430,11 @@ ${[...new Set(proposal.toolsUsed)].map((t) => `- ${t}`).join('\n')}
         this.qualityCache = JSON.parse(raw);
         return this.qualityCache!;
       }
-    } catch {
-      // ignore — corrupt file is replaced on next save.
+    } catch (e) {
+      // Phase v4.1.2-slice3: record corrupt-file / JSON parse / read
+      // failures into the health tracker. We still fall through to an
+      // empty cache so behavior is unchanged — telemetry is additive.
+      this.healthTracker?.recordFailure(e);
     }
     this.qualityCache = {};
     return this.qualityCache;
@@ -433,8 +449,11 @@ ${[...new Set(proposal.toolsUsed)].map((t) => `- ${t}`).join('\n')}
         JSON.stringify(cache, null, 2),
         'utf-8',
       );
-    } catch {
-      // ignore disk failures — quality data is best-effort.
+    } catch (e) {
+      // Phase v4.1.2-slice3: surface disk-write failures (EACCES,
+      // ENOSPC, EROFS) instead of silently dropping. Best-effort
+      // semantic preserved — we still return without throwing.
+      this.healthTracker?.recordFailure(e);
     }
   }
 }

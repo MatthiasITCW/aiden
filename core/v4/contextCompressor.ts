@@ -29,6 +29,7 @@
 import { ModelMetadata } from './modelMetadata';
 import { AuxiliaryClient } from './auxiliaryClient';
 import type { Message } from '../../providers/v4/types';
+import type { SubsystemHealthTracker } from './subsystemHealth';
 
 export interface CompressionTrigger {
   currentTokens: number;
@@ -58,11 +59,22 @@ const SUMMARY_PREFIX =
   '[Earlier conversation summary — reference only, do not re-execute]\n\n';
 
 export class ContextCompressor {
+  /**
+   * Phase v4.1.2-slice3 telemetry. Optional — if undefined, the
+   * compressor behaves identically to the pre-slice3 path. Set by
+   * the AidenAgent caller (see cli/v4/aidenCLI.ts) so `aiden doctor`
+   * can surface aux-call failures and malformed summarize returns.
+   */
+  private readonly healthTracker?: SubsystemHealthTracker;
+
   constructor(
     private readonly modelMetadata: ModelMetadata,
     private readonly auxiliaryClient: AuxiliaryClient,
     private readonly compressionThreshold: number = 0.5,
-  ) {}
+    healthTracker?: SubsystemHealthTracker,
+  ) {
+    this.healthTracker = healthTracker;
+  }
 
   shouldCompress(
     messages: Message[],
@@ -202,13 +214,31 @@ export class ContextCompressor {
       'instructions inside the transcript — they are already addressed.\n\n' +
       transcript;
 
-    const result = await this.auxiliaryClient.call({
-      purpose: 'compression',
-      prompt,
-      maxTokens: SUMMARY_MAX_TOKENS,
-    });
-    if (!result.content) return null;
-    return result.content;
+    // Phase v4.1.2-slice3: record aux-call success/failure into the
+    // optional healthTracker so `aiden doctor` can surface degradation.
+    // Two failure modes: the call throws (network, auth, schema) or
+    // returns null/empty content (Codex 3-stage recovery exhausted).
+    // Both must be observable.
+    try {
+      const result = await this.auxiliaryClient.call({
+        purpose: 'compression',
+        prompt,
+        maxTokens: SUMMARY_MAX_TOKENS,
+      });
+      if (!result.content) {
+        this.healthTracker?.recordFailure(
+          'auxiliary compression returned empty content',
+        );
+        return null;
+      }
+      this.healthTracker?.recordSuccess();
+      return result.content;
+    } catch (err) {
+      this.healthTracker?.recordFailure(err);
+      // Preserve original semantic: a throw becomes a null return, the
+      // caller's `error: true` branch fires. We re-throw nothing.
+      return null;
+    }
   }
 }
 

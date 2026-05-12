@@ -42,6 +42,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { Message } from '../../../providers/v4/types';
 import type { AuxiliaryClient } from '../auxiliaryClient';
+import type { SubsystemHealthTracker } from '../subsystemHealth';
 import { parseSkillContent } from '../skillSpec';
 import { CandidateStore, type MinedCandidate } from './candidateStore';
 import { traceFingerprint, type FingerprintEntry } from './traceFingerprint';
@@ -100,6 +101,14 @@ export interface SkillMinerOptions {
   sessionCap?:      number;
   /** Skip the LLM refinement pass entirely (skeleton-only). */
   skeletonOnly?:    boolean;
+  /**
+   * Phase v4.1.2-slice3 telemetry. Optional — when undefined the miner
+   * behaves identically to the pre-slice3 path. Failure surfaces:
+   * parseSkillContent throwing on a candidate (logged as
+   * 'invalid-skill' return), refine() throwing (currently uncaught),
+   * store.list()/loadRejected()/append() throwing.
+   */
+  healthTracker?:   SubsystemHealthTracker;
 }
 
 /**
@@ -152,12 +161,14 @@ export class SkillMiner {
   private readonly sessionCap: number;
   private readonly skeletonOnly: boolean;
   private readonly perSessionCount = new Map<string, number>();
+  private readonly healthTracker?: SubsystemHealthTracker;
 
   constructor(opts: SkillMinerOptions = {}) {
     this.store           = opts.store           ?? new CandidateStore();
     this.auxiliaryClient = opts.auxiliaryClient;
     this.sessionCap      = opts.sessionCap      ?? SESSION_SKILL_LIMIT;
     this.skeletonOnly    = opts.skeletonOnly    ?? false;
+    this.healthTracker   = opts.healthTracker;
   }
 
   /** Test/reset hook. */
@@ -194,14 +205,30 @@ export class SkillMiner {
       }
     }
 
-    // Fingerprint + dedup.
+    // Fingerprint + dedup. Phase v4.1.2-slice3: wrap the store reads
+    // so disk-level failures (read of pending list, read of rejected
+    // list) surface to the health tracker. We re-throw to preserve
+    // existing crash-on-disk-error semantics — the surface is purely
+    // observational.
     const fpEntries: FingerprintEntry[] = obs.trace.map((e) => ({ name: e.name, args: e.args }));
     const fingerprint = traceFingerprint(fpEntries);
-    const pending = await this.store.list();
+    let pending;
+    try {
+      pending = await this.store.list();
+    } catch (e) {
+      this.healthTracker?.recordFailure(e);
+      throw e;
+    }
     if (pending.some((c) => c.fingerprint === fingerprint)) {
       return { status: 'dedup-pending' };
     }
-    const rejected = await this.store.loadRejected();
+    let rejected;
+    try {
+      rejected = await this.store.loadRejected();
+    } catch (e) {
+      this.healthTracker?.recordFailure(e);
+      throw e;
+    }
     if (rejected.has(fingerprint)) {
       return { status: 'dedup-rejected' };
     }
@@ -227,7 +254,16 @@ export class SkillMiner {
 
     let skill = buildSkeleton(obs.trace, ctx);
     if (!this.skeletonOnly) {
-      skill = await refine(skill, { client: this.auxiliaryClient });
+      // Phase v4.1.2-slice3: refine is an LLM call that historically
+      // crashed the whole turn when it threw. Wrap and surface; on
+      // failure fall back to the skeleton so mining still produces
+      // something rather than nothing.
+      try {
+        skill = await refine(skill, { client: this.auxiliaryClient });
+      } catch (e) {
+        this.healthTracker?.recordFailure(e);
+        // Skeleton retained; carry on.
+      }
     }
 
     // Final validation — must round-trip through parseSkillContent
@@ -235,7 +271,8 @@ export class SkillMiner {
     // candidate rather than poison the queue.
     try {
       parseSkillContent(skill);
-    } catch {
+    } catch (e) {
+      this.healthTracker?.recordFailure(e);
       return { status: 'invalid-skill', confidence };
     }
 
@@ -248,8 +285,14 @@ export class SkillMiner {
       candidateConfidence: confidence,
       skillContent:        skill,
     };
-    await this.store.append(candidate);
+    try {
+      await this.store.append(candidate);
+    } catch (e) {
+      this.healthTracker?.recordFailure(e);
+      throw e;
+    }
     this.perSessionCount.set(obs.sessionId, this.countForSession(obs.sessionId) + 1);
+    this.healthTracker?.recordSuccess();
     return { status: 'queued', candidate, confidence };
   }
 }
