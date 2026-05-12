@@ -41,6 +41,8 @@ import type { ToolSchema }      from '../../providers/v4/types';
 // When SOUL.md is missing or whitespace-only the bundled default takes
 // over so a fresh install still has a working identity.
 import { DEFAULT_SOUL_MD } from '../../cli/v4/defaultSoul';
+// Phase v4.1.2-followup: runtime-injected version + capabilities slot.
+import { buildRuntimeManifest, renderRuntimeSlot } from './capabilities';
 
 // ── Public types ───────────────────────────────────────────────────────
 
@@ -62,6 +64,18 @@ export interface PromptBuilderOptions {
    * `toolRegistry.list().map(name => registry.get(name)?.toolset)`.
    */
   toolsetsLoaded?:      Set<string>;
+  /**
+   * Phase v4.1.2-followup self-awareness: count of tools currently
+   * registered. Drives the `Tools loaded: N` line in the `## Runtime`
+   * slot. Caller passes `toolRegistry.list().length`.
+   */
+  toolCount?:           number;
+  /**
+   * Phase v4.1.2-followup self-awareness: current provider id (e.g.
+   * 'chatgpt-plus', 'groq'). Drives the `Provider:` line in the
+   * `## Runtime` slot. `modelId` already exists below.
+   */
+  providerId?:          string;
   personalityOverlay?:  string;
   initialBudget?:       { used: number; max: number };
   platform?:            'windows' | 'linux' | 'macos';
@@ -121,7 +135,7 @@ const EMBODIMENT_DIRECTIVE =
  * is injected only when the corresponding toolset tag is in
  * `opts.toolsetsLoaded`. Replaces the "fixed slot order regardless of
  * capability" assumption — persona shape-shifts per available
- * capability (the OpenClaw / Hermes pattern from v4.2 recon).
+ * capability (prior-art pattern surfaced during v4.2 recon).
  *
  * Key match strings:
  *   - 'memory'         → MEMORY_GUIDANCE
@@ -361,6 +375,24 @@ export class PromptBuilder {
         optional: true,
       });
     }
+
+    // ── 4.25. Runtime manifest (self-awareness) ───────────────────────
+    // High-signal facts about what Aiden actually has loaded right now:
+    // version, tool count, skill count, channel/surface list, current
+    // provider/model. Always present so "what version are you" /
+    // "what tools do you have" answers come from facts in context,
+    // not from whatever stale text used to live in SOUL.md.
+    const runtimeManifest = buildRuntimeManifest({
+      toolCount:  opts.toolCount ?? 0,
+      skillCount: opts.skillsList?.length ?? 0,
+      providerId: opts.providerId,
+      modelId:    opts.modelId,
+    });
+    slots.push({
+      name:     'runtime',
+      content:  renderRuntimeSlot(runtimeManifest),
+      optional: false,
+    });
 
     // ── 4.5. Tool-conditional guidance ────────────────────────────────
     // Each block fires only when its corresponding toolset is loaded.

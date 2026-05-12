@@ -1033,6 +1033,12 @@ export async function buildAgentRuntime(
     memorySnapshot,
     skillsList,
     toolsetsLoaded,
+    // Phase v4.1.2-followup self-awareness: feed the runtime slot.
+    // toolCount comes from the same registry we just walked to build
+    // toolsetsLoaded; providerId joins modelId so both halves of the
+    // active route are in the prompt.
+    toolCount:  toolRegistry.list().length,
+    providerId,
     personalityOverlay: activeOverlay,
     modelId,
   };
