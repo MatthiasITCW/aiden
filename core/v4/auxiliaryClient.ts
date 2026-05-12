@@ -55,7 +55,12 @@ export type AuxiliaryPurpose =
   | 'risk_assess'
   | 'plan_classify'
   | 'honesty_classify'
-  | 'skill_describe';
+  | 'skill_describe'
+  // Phase v4.1.2 session-summary-followup: deterministic auto-summary
+  // on /quit. Bypasses the main agent loop so the model can't decline
+  // to call the tool — auxiliary generates the bullets, ChatSession
+  // hands them straight to sessionSummaryTool.
+  | 'session_summary';
 
 export interface AuxiliaryCallOptions {
   purpose: AuxiliaryPurpose;

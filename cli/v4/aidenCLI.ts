@@ -1599,6 +1599,11 @@ async function runInteractiveChat(cliOpts: any, opts: MainOptions): Promise<void
     // Phase v4.1-1.1 — live ChannelManager so /channel commands can
     // list, add, remove, and inspect adapters without an external server.
     channelManager: runtime.channelManager,
+    // Phase v4.1.2 session-summary-followup: ChatSession.maybeAutoSummarize
+    // needs these to write MEMORY.md directly (bypassing the agent loop)
+    // when /quit fires the auto-summary path.
+    memoryManager: runtime.memoryManager,
+    memoryGuard:   runtime.memoryGuard,
   };
 
   if (cliOpts.tui) {

@@ -65,6 +65,54 @@ import { expand, hasInterpolation, countSpans } from './shellInterpolation';
 import { installResizeGuard } from './resizeGuard';
 
 /**
+ * Phase v4.1.2 session-summary-followup: parse the auxiliary client's
+ * JSON-array response into a clean `string[]` of bullets. Defensive —
+ * tries direct JSON.parse first, then a fenced-code-block strip, then
+ * a "first [...] block" extraction. Returns null when nothing usable
+ * comes out so the caller can retry once with a stricter prompt.
+ *
+ * Exported for unit tests.
+ */
+export function parseSessionBulletsResponse(raw: string): string[] | null {
+  if (typeof raw !== 'string' || raw.trim().length === 0) return null;
+  const tryParseArray = (s: string): string[] | null => {
+    try {
+      const parsed = JSON.parse(s);
+      if (!Array.isArray(parsed)) return null;
+      const strings = parsed
+        .filter((x): x is string => typeof x === 'string')
+        .map((x) => x.trim())
+        .filter((x) => x.length > 0);
+      return strings.length > 0 ? strings : null;
+    } catch {
+      return null;
+    }
+  };
+
+  // 1. Try the response as-is.
+  const direct = tryParseArray(raw.trim());
+  if (direct) return direct;
+
+  // 2. Strip Markdown code fences if present (```json ... ``` or ``` ... ```).
+  const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenceMatch && fenceMatch[1]) {
+    const inFence = tryParseArray(fenceMatch[1].trim());
+    if (inFence) return inFence;
+  }
+
+  // 3. Extract the first balanced [...] block from anywhere in the text.
+  const bracketStart = raw.indexOf('[');
+  const bracketEnd   = raw.lastIndexOf(']');
+  if (bracketStart >= 0 && bracketEnd > bracketStart) {
+    const slice = raw.slice(bracketStart, bracketEnd + 1);
+    const extracted = tryParseArray(slice);
+    if (extracted) return extracted;
+  }
+
+  return null;
+}
+
+/**
  * Tier-3.1 helper: render a slash-command label honouring the
  * `AIDEN_UI_ICONS` opt-in. Default OFF — emoji icons are gated to
  * keep the dropdown ASCII-clean for terminals without good emoji
@@ -115,6 +163,13 @@ export interface ChatSessionOptions {
   skillLoader: SkillLoader;
   resolver: RuntimeResolver;
   config: ConfigManager;
+  /**
+   * Phase v4.1.2 session-summary-followup: needed so the auto-summary
+   * on /quit can bypass the main agent loop and write MEMORY.md
+   * deterministically via the existing tool + guard.
+   */
+  memoryManager?: import('../../core/v4/memoryManager').MemoryManager;
+  memoryGuard?:   import('../../moat/memoryGuard').MemoryGuard;
 
   /** Provider/model the session boots with. */
   initialProviderId: string;
@@ -460,34 +515,149 @@ export class ChatSession implements ChatSessionLike {
     // turn → same outcome (warn the user).
     const before = await this.snapshotMemoryStat(memoryPath);
 
-    this.opts.display.dim(`Saving session summary to ${memoryPath}…`);
-    try {
-      await this.runAgentTurn(
-        'This session is ending. You MUST call the session_summary tool ' +
-        'NOW with trigger=\'auto-quit\' and a bullets array of exactly 5 ' +
-        'concise items covering what we worked on, decisions made, files ' +
-        'changed, problems solved, and open items. Do not respond with ' +
-        'prose. Do not explain. Do not ask for confirmation. Call the ' +
-        'tool immediately — the user will not see your text, only the ' +
-        'tool call matters.',
+    // Phase v4.1.2 session-summary-followup: bypass the main agent loop
+    // entirely. The model could decline to call session_summary even
+    // with a directive prompt (smoke confirmed this). Auxiliary client
+    // generates the bullets deterministically; we call the tool
+    // directly with the parsed bullets, so there's no model decision
+    // about whether to actually save.
+    if (!this.opts.auxiliaryClient || !this.opts.memoryGuard || !this.opts.memoryManager) {
+      this.opts.display.warn(
+        'Skipping session summary — auxiliary client / memory plumbing not wired ' +
+        '(this is normal in test mode; real CLI sessions get all three).',
       );
+      return;
+    }
+
+    this.opts.display.dim(`Saving session summary to ${memoryPath}…`);
+    this.opts.display.dim('Generating session summary via auxiliary client…');
+
+    let bullets: string[] | null = null;
+    try {
+      bullets = await this.requestSessionBulletsFromAuxiliary();
     } catch (err) {
       this.opts.display.warn(
-        `Session summary failed: ${(err as Error).message}`,
+        `Session summary failed: auxiliary client errored — ${(err as Error).message}. MEMORY.md unchanged at: ${memoryPath}`,
+      );
+      return;
+    }
+    if (!bullets || bullets.length === 0) {
+      this.opts.display.warn(
+        `Session summary failed: auxiliary client returned unparseable response. MEMORY.md unchanged at: ${memoryPath}`,
+      );
+      return;
+    }
+
+    try {
+      // Call the tool directly with the auxiliary-generated bullets.
+      // sessionSummaryTool already handles section rotation + 10-entry
+      // cap + verify-on-disk via MemoryGuard.replaceSection — no need
+      // to duplicate that logic here.
+      const { sessionSummaryTool } = await import(
+        '../../tools/v4/memory/sessionSummary'
+      );
+      const result = await sessionSummaryTool.execute(
+        { bullets, trigger: 'auto-quit' },
+        {
+          cwd:         process.cwd(),
+          paths:       this.opts.paths!,
+          memory:      this.opts.memoryManager,
+          memoryGuard: this.opts.memoryGuard,
+        } as Parameters<typeof sessionSummaryTool.execute>[1],
+      ) as { success: boolean; error?: string };
+
+      if (!result.success) {
+        this.opts.display.warn(
+          `Session summary failed: ${result.error ?? 'unknown error'}. MEMORY.md may be unchanged at: ${memoryPath}`,
+        );
+        return;
+      }
+    } catch (err) {
+      this.opts.display.warn(
+        `Session summary failed during write: ${(err as Error).message}. MEMORY.md unchanged at: ${memoryPath}`,
       );
       return;
     }
 
     const after = await this.snapshotMemoryStat(memoryPath);
-    const grew = memoryGrewBetween(before, after);
-    if (grew) {
+    if (memoryGrewBetween(before, after)) {
       this.opts.display.dim(`Session summary saved to ${memoryPath}`);
     } else {
       this.opts.display.warn(
-        'Session summary tool was not called (model responded with prose ' +
-        `instead of firing the tool). MEMORY.md unchanged at: ${memoryPath}`,
+        `Session summary write completed but MEMORY.md size+mtime did not advance. ` +
+        `Check ${memoryPath} manually.`,
       );
     }
+  }
+
+  /**
+   * Phase v4.1.2 session-summary-followup: ask the auxiliary client
+   * for a JSON array of 5 session-summary bullets. One retry on
+   * malformed output with a stricter "JSON only" reminder, then we
+   * surface the failure honestly via the caller's warn() log.
+   *
+   * Returns `null` when both attempts fail to yield a valid array.
+   */
+  private async requestSessionBulletsFromAuxiliary(): Promise<string[] | null> {
+    const aux = this.opts.auxiliaryClient!;
+    const transcript = this.buildSessionTranscriptForSummary();
+
+    const promptStrict = (extraNote: string): string =>
+      [
+        'Summarize this session in EXACTLY 5 short bullets. Focus on:',
+        '- what we worked on',
+        '- decisions made',
+        '- files / commits changed',
+        '- problems solved',
+        '- open items',
+        '',
+        'Respond with ONLY a JSON array of 5 strings. No prose. No explanation. ' +
+          'No code fences. No leading or trailing text.',
+        '',
+        'Example: ["Shipped v4.1.1 to npm", "Diagnosed OAuth bug", "Patched tool schema", "Added doctor --providers", "Queued auxiliary fallback"]',
+        '',
+        extraNote,
+        '',
+        'Session transcript:',
+        transcript,
+      ].filter((s) => s.length > 0).join('\n');
+
+    const attempt = async (note: string): Promise<string[] | null> => {
+      const res = await aux.call({
+        purpose:   'session_summary',
+        prompt:    promptStrict(note),
+        maxTokens: 800,
+        timeoutMs: 30_000,
+      });
+      return parseSessionBulletsResponse(res.content);
+    };
+
+    const first = await attempt('');
+    if (first) return first;
+    const second = await attempt(
+      'STRICT: Your previous response was not parseable. Return ONLY the JSON array, nothing else.',
+    );
+    return second;
+  }
+
+  /**
+   * Compress recent history into a transcript blob the auxiliary
+   * client can summarise. Caps to the last 30 messages so the
+   * auxiliary prompt stays under typical small-model context limits;
+   * the auxiliary's `maxTokens: 800` output budget bounds the cost.
+   */
+  private buildSessionTranscriptForSummary(): string {
+    const recent = this.history.slice(-30);
+    const lines: string[] = [];
+    for (const m of recent) {
+      const role = m.role === 'user' ? 'USER' : m.role === 'assistant' ? 'AIDEN' : m.role.toUpperCase();
+      const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+      // Truncate any single message to 800 chars so a giant paste
+      // doesn't blow the prompt budget.
+      const trimmed = content.length > 800 ? `${content.slice(0, 800)}…` : content;
+      lines.push(`${role}: ${trimmed}`);
+    }
+    return lines.join('\n\n');
   }
 
   /**
