@@ -14,6 +14,58 @@
  * Status: PHASE 3.
  */
 
+/**
+ * Format a raw response body for inclusion in the user-facing error
+ * message. Recognises the OpenAI / Anthropic JSON envelope shape
+ * (`{ error: { message: "..." } }`) and falls back to the raw string
+ * for plain-text bodies. Returns null when nothing useful is available
+ * so callers can omit the ": <detail>" tail entirely.
+ *
+ * Truncates to 300 chars to keep multi-line responses from blowing
+ * up the user's terminal — full body remains on `error.raw` for
+ * programmatic consumers / `aiden doctor --providers` deep mode.
+ */
+export function formatRawForMessage(raw: unknown): string | null {
+  if (raw === undefined || raw === null) return null;
+
+  // OpenAI / Anthropic JSON envelope: { error: { message: "..." } }
+  if (typeof raw === 'object') {
+    const err = (raw as { error?: unknown }).error;
+    if (err && typeof err === 'object') {
+      const msg = (err as { message?: unknown }).message;
+      if (typeof msg === 'string' && msg.length > 0) {
+        return msg.length > 300 ? `${msg.slice(0, 300)}…` : msg;
+      }
+    }
+    // Some providers put the message at the top level.
+    const topMsg = (raw as { message?: unknown }).message;
+    if (typeof topMsg === 'string' && topMsg.length > 0) {
+      return topMsg.length > 300 ? `${topMsg.slice(0, 300)}…` : topMsg;
+    }
+    return null;
+  }
+
+  // Plain string body.
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) return null;
+    return trimmed.length > 300 ? `${trimmed.slice(0, 300)}…` : trimmed;
+  }
+
+  return null;
+}
+
+/**
+ * Compose the final `Error.message` from the short summary and (when
+ * available) the parsed/truncated raw response body. The body remains
+ * stashed on `ProviderError.raw` either way — this only enriches what
+ * users see when the error is rendered.
+ */
+function composeMessage(message: string, raw: unknown): string {
+  const tail = formatRawForMessage(raw);
+  return tail ? `${message}: ${tail}` : message;
+}
+
 export class ProviderError extends Error {
   constructor(
     message: string,
@@ -22,7 +74,7 @@ export class ProviderError extends Error {
     public readonly raw?: unknown,
     public readonly retryable: boolean = false,
   ) {
-    super(message);
+    super(composeMessage(message, raw));
     this.name = 'ProviderError';
   }
 }
