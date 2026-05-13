@@ -246,7 +246,25 @@ export class ToolRegistry {
 
       try {
         const result = await handler.execute(args, context);
-        return { id: call.id, name: call.name, result };
+        // v4.1.3-repl-polish: lift `degraded` + `degradedReason` from the
+        // handler's inner result to the outer ToolCallResult so the CLI
+        // trail row can render the partial-yellow state. Tools opt in by
+        // setting these on the object they return; without this lift the
+        // flags would sit on `out.result.degraded` where callbacks.ts
+        // can't see them. Strict typeof checks avoid promoting truthy-
+        // but-wrong-shape junk (numbers, strings, nested objects).
+        const inner = result as
+          | { degraded?: unknown; degradedReason?: unknown }
+          | null
+          | undefined;
+        const out: ToolCallResult = { id: call.id, name: call.name, result };
+        if (typeof inner?.degraded === 'boolean' && inner.degraded) {
+          out.degraded = true;
+          if (typeof inner.degradedReason === 'string') {
+            out.degradedReason = inner.degradedReason;
+          }
+        }
+        return out;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return { id: call.id, name: call.name, result: null, error: message };

@@ -89,12 +89,23 @@ export interface ToolCallRequest {
  * The result of executing a tool call, fed back into the next provider call
  * as a `tool` role message. `error` is set instead of `result` when
  * dispatch threw — the model sees the error string and decides how to recover.
+ *
+ * v4.1.3-repl-polish: `degraded` and `degradedReason` are set by tool
+ * implementations that complete with a best-effort / partial result (the
+ * agent still receives the full result; the CLI trail row is rendered in
+ * degraded-yellow rather than silently erased). Three built-in tools use
+ * this: recall_session (cached data), app_launch (CLI fallback),
+ * media_key (vault locked → default key).
  */
 export interface ToolCallResult {
   id: string;
   name: string;
   result: unknown;
   error?: string;
+  /** True when the tool completed but with a degraded / partial result. */
+  degraded?: boolean;
+  /** Human-readable reason shown in the trail row suffix (≤40 chars). */
+  degradedReason?: string;
 }
 
 /**

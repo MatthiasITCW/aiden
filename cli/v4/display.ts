@@ -22,8 +22,16 @@ import { marked } from 'marked';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const TerminalRenderer: new (opts?: unknown) => unknown = require('marked-terminal').default ?? require('marked-terminal');
 
-import { SkinEngine, getSkinEngine } from './skinEngine';
+import { SkinEngine, getSkinEngine, type ColorKind } from './skinEngine';
 import { visibleLength, truncateVisible } from './box';
+import {
+  iconForTool as trailIconForTool,
+  padVerb,
+  truncDetail,
+  TRAIL_PIPE,
+  TRAIL_VERB_PAD,
+  TRAIL_DETAIL_CAP,
+} from './display/toolTrail';
 // Phase v4.1-reply-formatting: skin-aware markdown renderer that
 // replaces marked-terminal's defaults with structured headers, lists,
 // code blocks, blockquotes, and links.
@@ -48,74 +56,57 @@ export interface ColumnSection {
 }
 
 /**
- * Phase 26.2.7 — category emoji icons for the tool-row prefix when
- * `AIDEN_UI_ICONS=1` is set in the environment. Default OFF (the
- * row stays at `·`) because emoji width and font availability vary
- * across Windows Terminal / older Console hosts / SSH sessions.
+ * v4.1.3-repl-polish — category emoji icons for the tool-row trail.
+ * Icons are ON by default (AIDEN_UI_ICONS !== '0'). Set
+ * `AIDEN_UI_ICONS=0` to disable them (CI / dumb terminals).
  *
- * Categories — tool name is matched against keys in this map:
- *   1. exact-match first (lowercased toolName)
- *   2. then substring match in insertion order
- *   3. fall back to `default` (·)
+ * Kept as a flat Record for backward-compat with smoke tests that
+ * import it directly. The canonical lookup now lives in
+ * `./display/toolTrail` (supports verb too); this map is derived
+ * from it for legacy reference.
  *
- * Keep the map small and category-based, NOT one-per-tool.
+ * Matching order: exact lowercased name, then substring, then 'default'.
  */
 export const TOOL_ICONS: Readonly<Record<string, string>> = {
-  // Observe / read / inspect
-  observe: '👁',
-  read: '👁',
-  file_read: '👁',
-  list: '👁',
-
-  // Think / analyze / plan
-  analyze: '🧠',
-  think: '🧠',
-  plan: '📋',
-  skills_list: '📋',
-
-  // Execute / write / run
-  execute: '⚡',
-  run: '⚡',
-  bash: '⚡',
-  powershell: '⚡',
-  code: '⚡',
-  skill_view: '⚡',
-  write: '✏',
-  edit: '✏',
-
+  // Observe / read
+  file_read: '👁', read_file: '👁', file_list: '👁', list_directory: '👁',
+  observe: '👁', read: '👁', list: '👁',
+  // Write / edit
+  file_write: '✏', write_file: '✏', edit_file: '✏',
+  write: '✏', edit: '✏', create: '✏',
+  // Execute / run
+  bash: '⚡', powershell: '⚡', execute_code: '⚡', skill_view: '⚡',
+  execute: '⚡', run: '⚡',
   // Web / browse
-  web_search: '🌐',
-  web_fetch: '🌐',
-  open_url: '🌐',
-  browser: '🌐',
-
-  // Memory
-  memory: '🧠',
-  recall: '🧠',
-
+  web_search: '🌐', web_fetch: '🌐', fetch_url: '🌐', open_url: '🌐',
+  navigate: '🌐', browser: '🌐', fetch: '🌐', search: '🌐',
+  // Memory / recall
+  recall_session: '🧠', session_search: '🧠', memory: '🧠', recall: '🧠',
+  // Think
+  session_summary: '🧠', analyze: '🧠', think: '🧠',
+  // Skills / catalog
+  skills_list: '📋', skill: '📋',
+  // Screen / capture
+  screenshot: '🖥', computer: '🖥',
+  // Media / launch
+  now_playing: '▶', app_launch: '▶', media: '▶',
+  // Deploy / build
+  deploy: '📦', build: '📦', push: '📦',
+  // Message / send
+  send: '💬', message: '💬', notify: '💬',
   // Verify / test
-  verify: '🛡',
-  test: '🛡',
-
-  // Default fallback (matches current behaviour).
+  verify: '🛡', test: '🛡', doctor: '🛡', health: '🛡',
+  // Default fallback
   default: '·',
 };
 
 /**
- * Phase 26.2.7 — return the category emoji for `toolName` from
- * `TOOL_ICONS`, or `·` when nothing matches. Lowercases the input
- * and tries exact match first, then substring match in the map's
- * insertion order. Pure — exported for smoke testing.
+ * Return the category emoji for `toolName`, or '·' when nothing matches.
+ * Delegates to the canonical toolTrail lookup (returns icon only).
+ * Exported for backward-compat with existing smoke / unit tests.
  */
 export function iconForTool(toolName: string): string {
-  const lc = toolName.toLowerCase();
-  const exact = TOOL_ICONS[lc];
-  if (exact) return exact;
-  for (const [key, glyph] of Object.entries(TOOL_ICONS)) {
-    if (key === 'default') continue;
-    if (lc.includes(key)) return glyph;
-  }
-  return TOOL_ICONS.default;
+  return trailIconForTool(toolName).icon;
 }
 
 /**
@@ -300,6 +291,16 @@ export class Display {
     } catch {
       // marked-terminal optional — markdown() falls back to raw text below
     }
+  }
+
+  /**
+   * v4.1.3-repl-polish — public colour gate so callers (e.g. session-end
+   * card renderer) can colour text without importing SkinEngine directly.
+   * Delegates to the active skin's applyColors(). Monochrome mode is
+   * respected the same way as internal calls.
+   */
+  applyColors(text: string, kind: ColorKind): string {
+    return this.skin.applyColors(text, kind);
   }
 
   /**
@@ -889,63 +890,93 @@ export class Display {
 
   toolRow(name: string, args: unknown): ToolRowHandle {
     const sk = this.skin;
-    const argStr = previewToolArgs(args);
-    const padded = name.length > TOOL_ROW_NAME_PAD
-      ? name.slice(0, TOOL_ROW_NAME_PAD)
-      : name.padEnd(TOOL_ROW_NAME_PAD);
-    // Phase 26.2.7 — category emoji icon when AIDEN_UI_ICONS=1, else
-    // the default muted middle-dot. Read at call-time so toggling
-    // the env var doesn't require a restart. Emoji are rendered raw
-    // (no SGR wrap) because most terminals paint emoji glyphs in
-    // their native colour and ignore foreground ANSI anyway.
-    const useIcons = process.env.AIDEN_UI_ICONS === '1';
-    const glyph = useIcons ? iconForTool(name) : sk.applyColors('·', 'muted');
-    const left =
-      `  ${glyph} ` +
-      `${sk.applyColors('tool', 'muted')} ` +
-      `${sk.applyColors(padded, 'tool')} ` +
-      `${sk.applyColors(argStr, 'muted')}`;
 
-    const renderBracket = (text: string, kind: ColorKindForBracket): string => {
-      const colored = sk.applyColors(`[${text}]`, kind);
-      return `${left} ${colored}\n`;
+    // ── Build the fixed left portion (icon + verb + detail) ────────────
+    // v4.1.3-repl-polish: icons default ON; set AIDEN_UI_ICONS=0 to
+    // disable (CI / dumb terminals / narrow SSH sessions).
+    // Read at call-time so env changes take effect without restart.
+    const useIcons = process.env.AIDEN_UI_ICONS !== '0';
+    const { icon, verb } = trailIconForTool(name);
+    const glyph = useIcons ? icon : sk.applyColors('·', 'muted');
+
+    // Detail field: reuse previewToolArgs for scalar-field extraction.
+    const detail = truncDetail(previewToolArgs(args));
+
+    // Running row — muted pipe, raw icon, tool-colored verb, muted detail.
+    const runningRow = (): string =>
+      `${sk.applyColors(TRAIL_PIPE, 'muted')} ${glyph} ` +
+      `${sk.applyColors(padVerb(verb), 'tool')} ` +
+      `${sk.applyColors(detail, 'muted')}\n`;
+
+    // Outcome row — entire line colored by outcome kind.
+    const outcomeRow = (suffix: string, kind: ColorKindForBracket): string => {
+      const content =
+        `${TRAIL_PIPE} ${glyph} ${padVerb(verb)} ${detail}` +
+        (suffix ? `  ${suffix}` : '');
+      return `${sk.applyColors(content, kind)}\n`;
     };
 
-    const isTty = !!this.out.isTTY;
+    // Capture stream reference so closures don't need `this`.
+    const out = this.out;
+    const isTty = !!out.isTTY;
     let printed = false;
 
-    const writeFinal = (text: string, kind: ColorKindForBracket): void => {
-      if (isTty && printed) {
-        // Move up one line, clear it, then write the final row.
-        this.out.write('\x1b[1A\x1b[2K\r');
-      }
-      this.out.write(renderBracket(text, kind));
+    // Erase the last printed line (TTY only).
+    const eraseLast = (): void => {
+      if (isTty && printed) out.write('\x1b[1A\x1b[2K\r');
+    };
+
+    const writeFinal = (suffix: string, kind: ColorKindForBracket): void => {
+      eraseLast();
+      out.write(outcomeRow(suffix, kind));
       printed = true;
     };
 
     if (isTty) {
-      this.out.write(renderBracket('running', 'warn'));
+      out.write(runningRow());
       printed = true;
+      // v4.1.3-repl-polish bug1: signal the stream re-render path
+      // that an unaccounted-for write landed mid-stream so it skips
+      // the cursor-up + erase-to-EOS rerender (which would otherwise
+      // nuke this row on streamComplete).
+      this.streamInterrupted = true;
     }
-    // On non-TTY we hold off entirely until the caller signals completion.
+    // Non-TTY: hold off until completion (log lines carry final state).
 
     return {
       ok(durationMs: number, retries = 0) {
-        const text =
-          retries > 0
-            ? `ok ${formatToolDuration(durationMs)} after ${retries} ${retries === 1 ? 'retry' : 'retries'}`
-            : `ok ${formatToolDuration(durationMs)}`;
-        writeFinal(text, 'success');
+        if (retries > 0) {
+          // Showed retries — surface the eventual success in warn so the
+          // user knows it took multiple attempts.
+          writeFinal(
+            `ok ${formatToolDuration(durationMs)} after ${retries} ${retries === 1 ? 'retry' : 'retries'}`,
+            'warn',
+          );
+        } else {
+          // Clean success — SILENT. Erase on TTY; emit nothing on non-TTY.
+          eraseLast();
+        }
       },
       fail(durationMs: number, retries = 0) {
-        const text =
+        const suffix =
           retries > 0
             ? `fail ${formatToolDuration(durationMs)} after ${retries} ${retries === 1 ? 'retry' : 'retries'}`
             : `fail ${formatToolDuration(durationMs)}`;
-        writeFinal(text, 'error');
+        writeFinal(suffix, 'error');
+      },
+      degraded(durationMs: number, reason?: string) {
+        const suffix = reason
+          ? `partial ${formatToolDuration(durationMs)} — ${reason}`
+          : `partial ${formatToolDuration(durationMs)}`;
+        writeFinal(suffix, 'degraded');
       },
       retry(n: number, m: number) {
-        writeFinal(`retry ${n}/${m} …`, 'warn');
+        // Update the running row with retry count.
+        eraseLast();
+        const content =
+          `${TRAIL_PIPE} ${glyph} ${padVerb(verb)} ${detail}  retry ${n}/${m} …`;
+        out.write(sk.applyColors(content, 'warn') + '\n');
+        printed = true;
       },
       blocked() {
         writeFinal('blocked', 'warn');
@@ -1164,6 +1195,18 @@ export class Display {
   // reprints the formatted output.
   private streamBuffer = '';
   private streamLineCount = 0;
+  /**
+   * v4.1.3-repl-polish bug1: tracks whether any non-streamPartial write
+   * happened during a stream cycle (a `toolRow` running/outcome row, a
+   * `streamToolIndicator` line, etc). When set, `streamComplete` skips
+   * the cursor-up + erase-to-end-of-screen re-render path — the erase
+   * walks back `streamLineCount` rows, but the cursor has descended
+   * further than that because the interruption writes weren't counted.
+   * Erasing then would nuke the tool rows along with the streamed body.
+   * Reset on each new stream cycle (in `streamPartial`'s first-call
+   * init block) and after `streamComplete` consumes it.
+   */
+  private streamInterrupted = false;
 
   /**
    * Append a streamed text fragment. Writes a styled "Aiden" header on
@@ -1184,6 +1227,11 @@ export class Display {
       this.streamHeaderShown = true;
       this.streamBuffer = '';
       this.streamLineCount = 0;
+      // v4.1.3-repl-polish bug1: fresh stream cycle — clear any
+      // interrupt flag left over from the prior cycle (the consume
+      // path in streamComplete also resets it, but a stream that
+      // never reaches completion shouldn't leave the flag stuck).
+      this.streamInterrupted = false;
     }
     this.out.write(text);
     this.streamLastEndedNewline = text.endsWith('\n');
@@ -1213,13 +1261,27 @@ export class Display {
     // skin-aware renderer.
     const buffered = this.streamBuffer;
     const lines = this.streamLineCount;
+    // v4.1.3-repl-polish bug1: capture + drain the interrupt flag in
+    // lockstep with the other per-cycle stream state. Anything writing
+    // directly to stdout during the cycle (toolRow's running/outcome
+    // rows, streamToolIndicator) sets it; we use it below to decide
+    // whether the cursor-walk-up + erase rerender is safe.
+    const interrupted = this.streamInterrupted;
     this.streamBuffer = '';
     this.streamLineCount = 0;
     this.streamHeaderShown = false;
     this.streamLastEndedNewline = false;
+    this.streamInterrupted = false;
 
     if (!this.out.isTTY) return;
     if (process.env.AIDEN_NO_REFORMAT === '1') return;
+    // v4.1.3-repl-polish bug1: skip the rerender entirely when a tool
+    // row / indicator wrote mid-stream — the cursor has descended past
+    // what `lines` tracks, so `\x1b[<lines>F\x1b[J` would erase the
+    // tool rows along with the streamed body. Leaving the raw streamed
+    // text in place is the honest fallback (markdown formatting is a
+    // polish, not a correctness invariant).
+    if (interrupted) return;
     // Cheap heuristic: only re-render when there's structure that
     // benefits from formatting. Avoids flicker on short prose replies.
     const hasStructure =
@@ -1278,6 +1340,11 @@ export class Display {
     const prefix = this.streamLastEndedNewline ? '' : '\n';
     this.out.write(`${prefix}${sk.applyColors(`${arrow} ${name}…`, 'tool')}\n`);
     this.streamLastEndedNewline = true;
+    // v4.1.3-repl-polish bug1: an untracked row landed mid-stream —
+    // tell streamComplete to skip the cursor-up + erase-to-EOS rerender
+    // (it would otherwise erase this indicator + every tool outcome row
+    // that printed between deltas).
+    this.streamInterrupted = true;
   }
 }
 
@@ -1348,23 +1415,47 @@ function renderRmsBar(rms: number): string {
   return '▌'.repeat(filled) + ' '.repeat(BAR_WIDTH - filled);
 }
 
-// ── Phase 23.5 — tool row helpers ─────────────────────────────────────
-
-/** Width the tool name is padded to so brackets line up across rows. */
-const TOOL_ROW_NAME_PAD = 16;
-/** Args preview cap. Args longer than this get truncated with "…". */
-const TOOL_ROW_ARG_CAP = 40;
-
-type ColorKindForBracket = 'success' | 'warn' | 'error';
+// ── Phase 23.5 / v4.1.3-repl-polish — tool row helpers ────────────────
+//
+// v4.1.3 changes the row format from:
+//   "  {glyph} tool {name:16} {args}  [{state}]"
+// to the compact trail format:
+//   "┊ {icon} {verb:12} {detail:40}"
+//
+// Outcome semantics:
+//   ok()        → SILENT — running row is erased; nothing persists.
+//   fail()      → row persists in error (red).
+//   degraded()  → row persists in degraded (yellow). NEW in v4.1.3.
+//   blocked()   → row persists in warn.
+//   retry()     → running row is updated with retry counter.
+//   emptyFail() → treated as fail (error colour).
+//   emptyRetry()→ treated as retry.
 
 /**
- * Handle returned by `Display.toolRow()`. Mutates the row's bracket in
- * place once the tool resolves. Each method writes the row exactly once;
- * subsequent calls would double-print.
+ * Kept for reference / smoke-test backward compat. New code should use
+ * TRAIL_VERB_PAD / TRAIL_DETAIL_CAP from toolTrail.ts instead.
+ * @deprecated
+ */
+export const TOOL_ROW_NAME_PAD = TRAIL_VERB_PAD;
+/** @deprecated Use TRAIL_DETAIL_CAP. */
+export const TOOL_ROW_ARG_CAP = TRAIL_DETAIL_CAP;
+
+type ColorKindForBracket = 'success' | 'warn' | 'error' | 'degraded';
+
+/**
+ * Handle returned by `Display.toolRow()`. Mutates the row in place once
+ * the tool resolves. Each method writes exactly once; subsequent calls
+ * would double-print.
  */
 export interface ToolRowHandle {
   ok(durationMs: number, retries?: number): void;
   fail(durationMs: number, retries?: number): void;
+  /**
+   * v4.1.3-repl-polish — tool completed but with a degraded / best-effort
+   * result (e.g. recall_session returned cached data, app_launch fell back
+   * to CLI). Row persists in degraded yellow.
+   */
+  degraded(durationMs: number, reason?: string): void;
   retry(n: number, m: number): void;
   blocked(): void;
   emptyRetry(): void;

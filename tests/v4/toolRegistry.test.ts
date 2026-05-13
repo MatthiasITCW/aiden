@@ -176,4 +176,115 @@ describe('ToolRegistry', () => {
     await exec({ id: 'x', name: 'peek', arguments: undefined as unknown as Record<string, unknown> });
     expect(seen).toHaveBeenCalledWith({});
   });
+
+  // ── v4.1.3-repl-polish: degraded-outcome lift ─────────────────────────
+  //
+  // buildExecutor must surface `degraded` / `degradedReason` from the
+  // inner handler result up to the outer ToolCallResult. Without this
+  // lift the CLI trail-row renderer (callbacks.ts → display.toolRow)
+  // would never see the partial-yellow state — the flags would sit on
+  // `out.result.degraded` instead of `out.degraded`.
+
+  it('12. degraded=true on inner result is lifted to outer ToolCallResult', async () => {
+    registry.register(
+      makeHandler('partial', {
+        async execute() {
+          return {
+            success: true,
+            data: 'something',
+            degraded: true,
+            degradedReason: 'used cached fallback',
+          };
+        },
+      }),
+    );
+    const exec = registry.buildExecutor(makeContext());
+    const res = await exec(call('partial'));
+    expect(res.degraded).toBe(true);
+    expect(res.degradedReason).toBe('used cached fallback');
+    // Inner result preserved unchanged — the model still sees the full
+    // handler payload, including the (now-also-lifted) flag fields.
+    expect(res.result).toEqual({
+      success: true,
+      data: 'something',
+      degraded: true,
+      degradedReason: 'used cached fallback',
+    });
+    expect(res.error).toBeUndefined();
+  });
+
+  it('13. degraded=false is NOT promoted (treated as ordinary success)', async () => {
+    registry.register(
+      makeHandler('clean', {
+        async execute() {
+          return { success: true, degraded: false };
+        },
+      }),
+    );
+    const exec = registry.buildExecutor(makeContext());
+    const res = await exec(call('clean'));
+    expect(res.degraded).toBeUndefined();
+    expect(res.degradedReason).toBeUndefined();
+  });
+
+  it('14. wrong-shape degraded values are ignored (string, number, object)', async () => {
+    const shapes: Array<unknown> = ['true', 1, { nested: true }, null];
+    for (const bad of shapes) {
+      registry.register(
+        makeHandler(`weird-${typeof bad}-${String(bad)}`, {
+          async execute() {
+            return { success: true, degraded: bad };
+          },
+        }),
+      );
+      const exec = registry.buildExecutor(makeContext());
+      const res = await exec(call(`weird-${typeof bad}-${String(bad)}`));
+      expect(res.degraded).toBeUndefined();
+      expect(res.degradedReason).toBeUndefined();
+    }
+  });
+
+  it('15. degraded=true with non-string reason: flag lifted, reason dropped', async () => {
+    registry.register(
+      makeHandler('reasonless', {
+        async execute() {
+          return { success: true, degraded: true, degradedReason: 42 };
+        },
+      }),
+    );
+    const exec = registry.buildExecutor(makeContext());
+    const res = await exec(call('reasonless'));
+    expect(res.degraded).toBe(true);
+    expect(res.degradedReason).toBeUndefined();
+  });
+
+  it('16. handler returning a primitive (string) does not crash the lift', async () => {
+    registry.register(
+      makeHandler('plain', {
+        async execute() {
+          return 'just a string';
+        },
+      }),
+    );
+    const exec = registry.buildExecutor(makeContext());
+    const res = await exec(call('plain'));
+    expect(res.result).toBe('just a string');
+    expect(res.degraded).toBeUndefined();
+    expect(res.error).toBeUndefined();
+  });
+
+  it('17. handler returning null does not crash the lift', async () => {
+    registry.register(
+      makeHandler('nullish', {
+        async execute() {
+          return null;
+        },
+      }),
+    );
+    const exec = registry.buildExecutor(makeContext());
+    const res = await exec(call('nullish'));
+    expect(res.result).toBeNull();
+    expect(res.degraded).toBeUndefined();
+    expect(res.error).toBeUndefined();
+  });
 });

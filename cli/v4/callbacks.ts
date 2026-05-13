@@ -170,6 +170,12 @@ export class CliCallbacks {
       handle.fail(ms);
       return;
     }
+    // v4.1.3-repl-polish: degraded outcome — tool completed but with a
+    // partial / best-effort result. Show in trail yellow instead of silent.
+    if (result?.degraded) {
+      handle.degraded(ms, result.degradedReason);
+      return;
+    }
     handle.ok(ms);
   };
 

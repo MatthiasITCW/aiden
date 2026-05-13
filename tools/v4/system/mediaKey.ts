@@ -70,7 +70,20 @@ export const mediaKeyTool: ToolHandler = {
     ].join(' ');
     try {
       await runPowerShell(script, { timeoutMs: 5_000 });
-      return { success: true, action };
+      // v4.1.3-repl-polish: SendKeys returns 0 whether or not any
+      // media-aware app received the keystroke — Windows doesn't
+      // surface the SMTC routing outcome to user-mode. We could
+      // scan `osProcessListImpl` for known media apps, but that's
+      // a cross-tool dep that distorts mediaKey's surface area. The
+      // honest answer is "we don't know if it landed"; the trail
+      // row renders yellow to signal that to the user without
+      // affecting the model's read of the result.
+      return {
+        success:        true,
+        action,
+        degraded:       true,
+        degradedReason: 'media key sent; cannot verify any app received it',
+      };
     } catch (e) {
       return {
         success: false,

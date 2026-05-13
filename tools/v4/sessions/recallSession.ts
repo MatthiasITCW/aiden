@@ -141,6 +141,15 @@ export const recallSessionTool: ToolHandler = {
     };
     const ranked: RecallResult = rankDistillations(dists, recallQuery);
 
+    // v4.1.3-repl-polish: mark degraded when any matched session was
+    // distilled with the Phase A+B `partial: true` flag (LLM-timeout
+    // path — deterministic fields present, semantic bullets/decisions
+    // may be empty). The model still gets the full match list; the
+    // trail row renders yellow so the user knows recall completed
+    // against partial data.
+    const partialCount = ranked.matches.filter((m) => m.partial === true).length;
+    const degraded = partialCount > 0;
+
     return {
       success:     true,
       query:       recallQuery.query,
@@ -151,6 +160,12 @@ export const recallSessionTool: ToolHandler = {
       // delta is malformed files; the agent can suggest running aiden
       // doctor to inspect.
       scanned:     ids.length,
+      ...(degraded && {
+        degraded:       true,
+        degradedReason: partialCount === 1
+          ? '1 matched session has partial distillation data'
+          : `${partialCount} matched sessions have partial distillation data`,
+      }),
     };
 
     // Note re: subsystem health — wire-up happens at the runtime

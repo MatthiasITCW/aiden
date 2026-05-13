@@ -163,19 +163,23 @@ describe('formatStatusLine (Phase 22 Task 4)', () => {
     expect(ctxSegment).toMatch(/\[▓+░+\]/);
   });
 
-  it('coloured output uses the soft-cyan #6FB3D2 separator (no grey)', () => {
-    // Ensures Group A's muted-colour change actually applies to the
-    // status bar separators rather than re-introducing grey here.
+  it('coloured output uses the muted #888888 separator (post-v4.1.3 palette)', () => {
+    // v4.1.3-repl-polish moved the soft-cyan (#6FB3D2) from `muted`
+    // to a new dedicated `session` color kind, and set `muted` to a
+    // true grey (#888888 = rgb 136,136,136) so secondary text reads
+    // as genuinely secondary against PowerShell's dark-blue default
+    // background. The status bar separator follows `muted`, so this
+    // test tracks the new grey — same hook, refreshed hue.
     const display = makeDisplay({ mono: false });
     const line = formatStatusLine({
       ...baseArgs,
       state: { kind: 'ready' },
       display,
     });
-    // Soft cyan #6FB3D2 = rgb 111, 179, 210.
-    expect(line).toContain('\x1b[38;2;111;179;210m');
-    // No grey #808080 anywhere.
-    expect(line).not.toContain('\x1b[38;2;128;128;128m');
+    // New muted = #888888 = rgb 136, 136, 136.
+    expect(line).toContain('\x1b[38;2;136;136;136m');
+    // Old soft-cyan #6FB3D2 must NOT leak into muted's old slot.
+    expect(line).not.toContain('\x1b[38;2;111;179;210m');
   });
 
   it('coloured output uses the brand orange #FF6B35 for filled progress cells', () => {

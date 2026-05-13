@@ -57,6 +57,7 @@ import {
   type SessionExitPath,
   type SessionDistillation,
 } from '../../core/v4/sessionDistiller';
+import { renderSessionEndCard } from './display/sessionEndCard';
 import { VERSION as AIDEN_VERSION } from '../../core/version';
 import { writeDistillation } from '../../core/v4/distillationStore';
 import { extractCandidates } from '../../core/v4/promotionCandidates';
@@ -312,6 +313,13 @@ export class ChatSession implements ChatSessionLike {
    * populated alongside it after a verified write.
    */
   private lastDistillation: SessionDistillation | null = null;
+  /**
+   * Absolute path the most recent distillation JSON was written to.
+   * Captured at write-time and surfaced in the session-end card so the
+   * user has a concrete artifact to inspect or feed to recall_session.
+   * Null when the write failed or no distillation has been produced.
+   */
+  private lastDistillationPath: string | null = null;
 
   constructor(private opts: ChatSessionOptions) {
     this.currentProviderId = opts.initialProviderId;
@@ -405,6 +413,18 @@ export class ChatSession implements ChatSessionLike {
           this.opts.display.warn(
             `Session summary skipped on ${sig}: ${(err as Error).message}`,
           );
+        }
+        // v4.1.3-repl-polish: render session-end card before farewell when
+        // a distillation was written this session. Pass the on-disk path
+        // so the card surfaces the artifact location to the user.
+        if (this.lastDistillation) {
+          for (const line of renderSessionEndCard(
+            this.lastDistillation,
+            (t, k) => this.opts.display.applyColors(t, k),
+            this.lastDistillationPath,
+          )) {
+            this.opts.display.write(line + '\n');
+          }
         }
         this.opts.display.dim('Goodbye.');
         process.exit(0);
@@ -544,6 +564,16 @@ export class ChatSession implements ChatSessionLike {
             // is resumed in the same process (not today's behavior),
             // otherwise they're skipped — documented in commit.
             await this.maybeRunPromotion(promptApi);
+            // v4.1.3-repl-polish: session-end card before farewell.
+            if (this.lastDistillation) {
+              for (const line of renderSessionEndCard(
+                this.lastDistillation,
+                (t, k) => this.opts.display.applyColors(t, k),
+                this.lastDistillationPath,
+              )) {
+                this.opts.display.write(line + '\n');
+              }
+            }
             break;
           }
           if (result.clearHistory) this.history = [];
@@ -701,6 +731,7 @@ export class ChatSession implements ChatSessionLike {
       const dir = path.join(this.opts.paths.root, 'distillations');
       try {
         const file = await writeDistillation(dir, dist);
+        this.lastDistillationPath = file;
         this.opts.display.dim(
           `Session distillation${dist.partial ? ' (partial)' : ''} saved to ${file}`,
         );

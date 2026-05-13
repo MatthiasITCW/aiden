@@ -41,7 +41,11 @@ export type ColorKind =
   | 'warn'
   | 'success'
   | 'muted'
-  | 'heading';
+  | 'heading'
+  /** Cyan — session IDs, session-end card labels. v4.1.3-repl-polish. */
+  | 'session'
+  /** Yellow — degraded tool outcomes (best-effort, partial result). v4.1.3-repl-polish. */
+  | 'degraded';
 
 export interface SkinDefinition {
   name: string;
@@ -70,10 +74,17 @@ const DEFAULT_SKIN: SkinDefinition = {
     error: [0xf4, 0x47, 0x47],
     warn: [0xff, 0xc1, 0x07],
     success: [0x4c, 0xaf, 0x50],
-    // Phase 22 colour discipline: soft cyan replaces grey for secondary
-    // text (timestamps, hints, tips, dim diagnostics).
-    muted: [0x6f, 0xb3, 0xd2],
+    // v4.1.3-repl-polish: muted is now true grey (#888) so it reads as
+    // genuinely secondary. The soft-cyan that was here moved to 'session'.
+    muted: [0x88, 0x88, 0x88],
     heading: BRAND_ORANGE,
+    // v4.1.3-repl-polish: session = soft cyan (ex-muted); used for IDs
+    // and the session-end card header labels.
+    session: [0x6f, 0xb3, 0xd2],
+    // v4.1.3-repl-polish: degraded = amber yellow; distinct from warn
+    // (which shares the colour) so callers can differentiate in code
+    // even though they render identically.
+    degraded: [0xff, 0xc1, 0x07],
   },
   glyphs: {
     bullet: '•',
@@ -101,6 +112,8 @@ const LIGHT_SKIN: SkinDefinition = {
     success: [0x1b, 0x5e, 0x20],
     muted: [0x60, 0x60, 0x60],
     heading: [0xc4, 0x42, 0x10],
+    session: [0x00, 0x55, 0x88],
+    degraded: [0x80, 0x60, 0x00],
   },
   glyphs: { ...DEFAULT_SKIN.glyphs },
 };
@@ -119,6 +132,8 @@ const MONOCHROME_SKIN: SkinDefinition = {
     success: null,
     muted: null,
     heading: null,
+    session: null,
+    degraded: null,
   },
   glyphs: {
     bullet: '*',

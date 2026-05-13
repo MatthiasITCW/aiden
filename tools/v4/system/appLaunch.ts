@@ -82,7 +82,24 @@ export const appLaunchTool: ToolHandler = {
       // Extract PID when Start-Process succeeded; null for cmd-fallback path.
       const pidMatch = out.match(/PID=(\d+)/);
       const pid = pidMatch ? Number(pidMatch[1]) : null;
-      return { success: true, app, pid, raw: out };
+      // v4.1.3-repl-polish: Start-Process returns 0 even if the app
+      // crashes during init; the cmd-fallback path doesn't return a
+      // PID at all. Either way we can't verify the launched app is
+      // actually running — the only honest signal is the PID we
+      // captured, which the model can feed to `os_process_list` to
+      // confirm liveness. Mark degraded uniformly so the trail row
+      // renders yellow and the user knows verification is one
+      // tool-call away.
+      return {
+        success:        true,
+        app,
+        pid,
+        raw:            out,
+        degraded:       true,
+        degradedReason: pid !== null
+          ? `launched (PID ${pid}); call os_process_list to confirm it's still alive`
+          : 'launched via cmd fallback; PID unknown — call os_process_list to confirm',
+      };
     } catch (e) {
       return {
         success: false,

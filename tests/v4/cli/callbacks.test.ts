@@ -289,7 +289,13 @@ describe('CliCallbacks.setVerboseMode', () => {
 });
 
 describe('CliCallbacks Phase 23.5 onToolCall', () => {
-  it('emits a row per tool call with [ok N ms] on success', () => {
+  // v4.1.3-repl-polish: row format changed —
+  //   - Successful tool calls are SILENT on non-TTY (no persistent row).
+  //   - Failure / blocked / degraded rows render via the new trail
+  //     format: `┊ {icon} {verb:12} {detail}  {outcome}`. Brackets
+  //     [ok …] / [fail …] / [blocked] are gone; the outcome is a
+  //     plain suffix colored by kind.
+  it('non-TTY success emits no persistent row (silent positive)', () => {
     const { display, output } = makeDisplay();
     const cb = new CliCallbacks({ display });
     cb.onToolCall(
@@ -301,12 +307,12 @@ describe('CliCallbacks Phase 23.5 onToolCall', () => {
       'after',
       { id: 'c1', name: 'web_search', result: { hits: [] } },
     );
-    const text = output();
-    expect(text).toMatch(/· tool web_search/);
-    expect(text).toMatch(/\[ok \d+ms\]/);
+    // Mock stream is non-TTY by default; new toolRow() defers until
+    // completion on non-TTY, and ok() is silent → buffer stays empty.
+    expect(output()).toBe('');
   });
 
-  it('uses [blocked] when result.error mentions URL provenance gate', () => {
+  it('uses "blocked" suffix when result.error mentions URL provenance gate', () => {
     const { display, output } = makeDisplay();
     const cb = new CliCallbacks({ display });
     cb.onToolCall(
@@ -326,10 +332,14 @@ describe('CliCallbacks Phase 23.5 onToolCall', () => {
           'provenance gate).',
       },
     );
-    expect(output()).toMatch(/\[blocked\]/);
+    const text = output();
+    expect(text).toMatch(/┊/);
+    expect(text).toMatch(/blocked/);
+    // No legacy bracket form.
+    expect(text).not.toMatch(/\[blocked\]/);
   });
 
-  it('uses [fail N ms] for non-blocked tool errors', () => {
+  it('uses "fail Nms" suffix for non-blocked tool errors', () => {
     const { display, output } = makeDisplay();
     const cb = new CliCallbacks({ display });
     cb.onToolCall(
@@ -346,7 +356,33 @@ describe('CliCallbacks Phase 23.5 onToolCall', () => {
         error: 'command not found',
       },
     );
-    expect(output()).toMatch(/\[fail \d+ms\]/);
+    const text = output();
+    expect(text).toMatch(/┊/);
+    expect(text).toMatch(/fail \d+ms/);
+    expect(text).not.toMatch(/\[fail/);
+  });
+
+  it('uses "partial Nms — reason" suffix when result.degraded === true', () => {
+    const { display, output } = makeDisplay();
+    const cb = new CliCallbacks({ display });
+    cb.onToolCall(
+      { id: 'c4', name: 'recall_session', arguments: { query: 'x' } },
+      'before',
+    );
+    cb.onToolCall(
+      { id: 'c4', name: 'recall_session', arguments: { query: 'x' } },
+      'after',
+      {
+        id: 'c4',
+        name: 'recall_session',
+        result: { matches: [] },
+        degraded: true,
+        degradedReason: '1 matched session has partial distillation data',
+      },
+    );
+    const text = output();
+    expect(text).toMatch(/partial \d+ms/);
+    expect(text).toContain('partial distillation data');
   });
 
   it('fires beforeFirstToolHook exactly once per turn', () => {
