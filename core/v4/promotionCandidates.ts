@@ -88,20 +88,44 @@ export const MAX_CANDIDATES = 10;
  * word boundaries so partial-word matches don't fire ("remembering" ≠
  * "remember").
  *
- * Captures everything after the verb up to end-of-line or sentence
- * terminator (`.`, `!`, `?`). The candidate text is then trimmed and
- * cleaned of leading filler ("that ", "this ").
+ * Capture semantics — Phase v4.1.2-bug-Z:
+ *
+ *   Previous: capture terminated at any `[.!?\n]` (sentence boundary).
+ *   That truncated common payloads with periods:
+ *     - version strings: "gpt-5.5" → captured as "gpt-5"
+ *     - URLs: "https://api.example.com/v1" → "https://api"
+ *     - semver: "v1.2.3" → "v1"
+ *     - filenames: "config.test.ts" → "config"
+ *
+ *   Current: capture rest-of-payload until BLANK-LINE BOUNDARY
+ *   (`\n\s*\n`) or end-of-string. Regex detects intent (the user said
+ *   "remember"), not meaning (what counts as a sentence). The `s` flag
+ *   makes `.` match newlines so multi-line payloads survive a single
+ *   capture.
+ *
+ *   Trade-off: when multiple markers fire within one sentence-run
+ *   (no blank-line boundaries), the first-marker capture extends to
+ *   end-of-payload and the second marker's narrower capture is
+ *   dedup-folded into it. One candidate covers both facts. Cleanly
+ *   paragraph-separated multi-markers still split because the
+ *   blank-line boundary terminates the first capture before the
+ *   second marker's position. The promotion prompt shows the full
+ *   capture so the user approves knowingly.
  */
 // Separator tolerance: between the verb-phrase ("remember that",
 // "save this", "don't forget to") and the fact, accept whitespace
 // AND optional punctuation (`:`, `,`). Some users naturally write
 // "remember that: the port is 4200" or "save this — we use X".
 const SEP = '[\\s:,—-]+';
+// Capture-end: blank line (`\n` + optional whitespace + `\n`) OR
+// end-of-string. The `s` flag lets `.` match newlines so single-marker
+// multi-line payloads stay in one capture.
+const END = '(?:\\n\\s*\\n|$)';
 const EXPLICIT_SIGNAL_PATTERNS: ReadonlyArray<RegExp> = Object.freeze([
-  new RegExp(`\\bremember${SEP}(?:that|this)${SEP}(.+?)(?:[.!?\\n]|$)`, 'gi'),
-  new RegExp(`\\bsave${SEP}(?:this|that)${SEP}(?:to memory${SEP})?(.+?)(?:[.!?\\n]|$)`, 'gi'),
-  new RegExp(`\\bfor next time${SEP}(.+?)(?:[.!?\\n]|$)`, 'gi'),
-  new RegExp(`\\bdon'?t forget${SEP}(?:that|to)${SEP}(.+?)(?:[.!?\\n]|$)`, 'gi'),
+  new RegExp(`\\bremember${SEP}(?:that|this)${SEP}(.+?)${END}`, 'gis'),
+  new RegExp(`\\bsave${SEP}(?:this|that)${SEP}(?:to memory${SEP})?(.+?)${END}`, 'gis'),
+  new RegExp(`\\bfor next time${SEP}(.+?)${END}`, 'gis'),
+  new RegExp(`\\bdon'?t forget${SEP}(?:that|to)${SEP}(.+?)${END}`, 'gis'),
 ]);
 
 /**

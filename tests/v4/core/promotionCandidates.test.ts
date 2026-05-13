@@ -80,11 +80,83 @@ describe('extractExplicitSignals', () => {
     expect(out[1].text).toContain('npm test');
   });
 
-  it('captures multiple signals in one message', () => {
+  it('captures one run-on payload covering multiple markers as a single candidate (via extractCandidates)', () => {
+    // Phase v4.1.2-bug-Z: Option B (rest-of-payload extraction). Each
+    // marker still fires separately at the raw extractExplicitSignals
+    // layer (two captures, both containing the fact-payload), but the
+    // within-session substring dedup at extractCandidates folds the
+    // narrower capture into the wider one. End result for the user:
+    // one candidate covering both facts. They see the full capture in
+    // the promotion prompt and approve knowingly.
+    const out = extractCandidates(
+      [u("remember that the port is 4200. for next time: skip the resync step.")],
+      dist({}),
+      '',
+    );
+    expect(out.candidates).toHaveLength(1);
+    expect(out.candidates[0].text).toContain('port is 4200');
+    expect(out.candidates[0].text).toContain('skip the resync step');
+    // The other raw capture got folded — count it.
+    expect(out.dedupedWithinSession).toBe(1);
+  });
+
+  it('captures two candidates when markers are paragraph-separated', () => {
+    // Blank-line boundary cleanly terminates the first marker's
+    // capture before the second marker's position — two independent
+    // durable facts emerge as two candidates. No within-session
+    // dedup folding because neither capture contains the other.
+    const out = extractCandidates(
+      [u("remember that the port is 4200.\n\nfor next time: skip the resync step.")],
+      dist({}),
+      '',
+    );
+    expect(out.candidates).toHaveLength(2);
+    expect(out.dedupedWithinSession).toBe(0);
+  });
+
+  // ── Phase v4.1.2-bug-Z regression guards ──────────────────────────────
+  // Each fixture below failed under the previous period-bounded regex.
+  // The user-reported case (v4.1.2 smoke test, 2026-05-13) is first.
+
+  it('preserves decimals in version strings (smoke-test regression guard)', () => {
+    // Under the old `(.+?)(?:[.!?\\n]|$)` bound, this input truncated
+    // to "for next time: gpt-5" because the period in "5.5" terminated
+    // the capture early. Two markers fire ("save this" + "for next time"),
+    // so we go through extractCandidates so the dedup-within-session
+    // folds them down to one candidate the user actually sees.
+    const out = extractCandidates(
+      [u("save this for next time: gpt-5.5 is the auto-picked default for chatgpt-plus")],
+      dist({}),
+      '',
+    );
+    expect(out.candidates).toHaveLength(1);
+    expect(out.candidates[0].text).toContain('gpt-5.5');
+    expect(out.candidates[0].text).toContain('chatgpt-plus');
+  });
+
+  it('preserves dots in URLs', () => {
     const out = extractExplicitSignals([
-      u("remember that the port is 4200. for next time: skip the resync step."),
+      u("remember that the API base URL is https://api.example.com/v1/users"),
     ]);
-    expect(out).toHaveLength(2);
+    expect(out).toHaveLength(1);
+    expect(out[0].text).toContain('https://api.example.com/v1/users');
+  });
+
+  it('preserves dots in semantic versions', () => {
+    const out = extractExplicitSignals([
+      u("remember that v1.2.3 broke things on Python 3.12.2"),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].text).toContain('v1.2.3');
+    expect(out[0].text).toContain('3.12.2');
+  });
+
+  it('preserves dots in filenames', () => {
+    const out = extractExplicitSignals([
+      u("save this: the config lives at /etc/app/config.local.test.json"),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].text).toContain('config.local.test.json');
   });
 
   it('ignores assistant messages (only user signals)', () => {
