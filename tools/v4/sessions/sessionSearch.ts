@@ -24,7 +24,11 @@ export const sessionSearchTool: ToolHandler = {
   schema: {
     name: 'session_search',
     description:
-      'Search past conversation sessions by keyword (FTS5 full-text). Returns matching message snippets with the session id and timestamp. Use to recall something the user said in an earlier conversation.',
+      'Search past conversation MESSAGES by keyword (FTS5 full-text). ' +
+      'Returns matching message SNIPPETS with the session id and timestamp. ' +
+      'Use when you need the exact words a past message contained. ' +
+      'For topic-level recall of what happened in past sessions (decisions, ' +
+      'files touched, open items), call `recall_session` instead.',
     inputSchema: {
       type: 'object',
       properties: {

@@ -49,6 +49,7 @@ import { browserCloseTool } from './browser/browserClose';
 
 import { sessionSearchTool } from './sessions/sessionSearch';
 import { sessionListTool } from './sessions/sessionList';
+import { recallSessionTool } from './sessions/recallSession';
 
 import { skillsListTool } from './skills/skillsList';
 import { skillViewTool } from './skills/skillView';
@@ -117,6 +118,12 @@ export function registerReadOnlyTools(registry: ToolRegistry): void {
 
   registry.register(sessionSearchTool);
   registry.register(sessionListTool);
+  // Phase v4.1.2-memory-C: recall_session reads SessionDistillation
+  // files written by Phase A+B. Sits alongside session_search — the
+  // two have distinct purposes (FTS5-over-messages vs ranked
+  // distillation summaries); descriptions force the right model
+  // choice.
+  registry.register(recallSessionTool);
 
   registry.register(skillsListTool);
   registry.register(skillViewTool);
