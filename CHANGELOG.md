@@ -1,3 +1,78 @@
+## [4.1.2] - 2026-05-13
+
+### Memory Architecture (Phases A-D)
+
+Aiden now remembers across sessions in ways that actually work:
+
+- **Phase A — Reliable session-end firing**: Distillation triggers on every CLI exit path (`/quit`, SIGINT, SIGTERM, EOF, crash), not just `/quit`. 4-second timeout with honest skip logging. In-memory idempotency flag prevents double-summary.
+
+- **Phase B — Structured distillation**: Replaces lossy 5-bullet summary with structured `SessionDistillation` JSON: bullets, decisions, open_items, keywords (semantic, from auxiliary LLM) + files_touched, tools_used (deterministic, from tool trace) + schema_version, exit_path, partial (metadata). Persisted to `<aiden_home>/distillations/<session_id>.json`. Transcript filtered before auxiliary call to prevent agent-boilerplate leakage. Hardened prompt with explicit anti-boilerplate rules.
+
+- **Phase C — Cross-session retrieval**: New `recall_session` tool queries past distillations by topic + recency. Inputs: query, limit, days, include_full. Output includes `total_found` and `scanned` to distinguish "no history" from "history exists, no match."
+
+- **Phase D — Promotion path (opt-in)**: At session-end after distillation writes, Aiden surfaces promotion candidates from explicit user signals (`remember that...`, `save this for next time...`) + distillation decisions/open_items. User approves with numbers (`1,3`), ranges (`1-3`), `all`, `none`, or `skip`. Approved facts land in new `## Durable facts` section of MEMORY.md.
+
+- **Memory consent contract**: `memory_remove` refuses autonomous deletion of facts in `## Durable facts`. Model can propose, only user can revoke. Two-layer defense (tool description warning + tool-side rejection).
+
+### Update Flow
+
+- `/update` slash command — bypass cache, fresh registry probe, print current vs latest
+- `/update install` — execute `npm install -g aiden-runtime@latest` from inside Aiden, prompt restart
+- `aiden_self_update` tool — natural language works: "update yourself" → two-step confirmation → install
+- Permission-aware fallback prints platform-specific copy-paste commands (Windows admin, macOS/Linux sudo, user-local npm prefix)
+
+### Provider Work
+
+- **Boot auto-pick**: New users get best authed provider at boot — priority `chatgpt-plus → claude-pro → anthropic → openai → deepseek → groq → ollama`. Persisted user choice still wins.
+- **Runtime slot freshness**: System prompt's provider/model description updates on `/model` switch (was caching at boot).
+- **Liveness probe fix**: `aiden doctor --providers` correctly reports chatgpt-plus green.
+- **Codex `{detail}` envelope**: Upstream error messages now surface in standard error path.
+- **DeepSeek V4 Pro** added with `thinking: enabled` + `reasoning_effort: high` defaults via new per-model defaults pattern.
+
+### Telemetry Foundation
+
+- **Subsystem health registry**: Silent failures in ContextCompressor, SkillTeacher, SkillMiner, Logger surface via `aiden doctor`. Slice 3 of v4.1.2.
+- **Skill outcome telemetry**: Tool success/failure attributed to recently-loaded skills (5-tool attribution window after `skill_view`). Persisted to `<aiden_home>/skills/.skill-outcomes.json`.
+
+### Eval Harness
+
+- Standalone `evals/cli.ts` runner via ts-node (vitest can't gate publish on eval failures)
+- 18 honesty scenarios (10 easy + 8 hard) — catches regressions in honesty enforcement
+- Variance-prone scenarios documented (model phrasing flickers between 17-18 across runs; baseline is 17/18)
+
+### Computer Control (Windows)
+
+8 new tools: `screenshot`, `os_process_list`, `media_key`, `volume_set`, `app_launch`, `app_close`, `clipboard_read`, `clipboard_write`. All PowerShell-wrapped. Cross-platform support deferred to v4.1.3+.
+
+### Self-Awareness
+
+- Boot card shows current version (`● v4.1.2`)
+- Runtime slot in system prompt tells Aiden which provider/model it's actually running
+
+### Bug Fixes
+
+- Phase D explicit-signal regex preserves decimals in version strings, URLs, filenames (was truncating `gpt-5.5` at `5`)
+- Distiller no longer produces agent self-description boilerplate (transcript filtered, prompt hardened)
+- `memory_remove` cannot autonomously delete user-approved durable facts
+
+### Install / Upgrade
+
+```bash
+npm install -g aiden-runtime@latest
+```
+
+Or from inside Aiden: `/update install`
+
+### Counts
+
+- 53 tools (was 45)
+- 74 skills (was 68)
+- 33 slash commands (was 28)
+- 1,983 tests (was ~1,500)
+- 18 honesty scenarios (was 10)
+
+---
+
 ## v4.1.1 — 2026-05-12
 
 Hotfix release. Fixes ChatGPT Plus OAuth users hitting 400 errors on every message. Adds proactive provider health checks.
