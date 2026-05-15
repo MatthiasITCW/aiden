@@ -196,6 +196,24 @@ export function withBrowserState(
         }
       } catch { /* detection never breaks the inner tool */ }
 
+      // v4.3 Phase 4 — propagate blocker (or its absence) to the
+      // active tab's metadata in BrowserState. Cross-tab queries can
+      // then ask "is there a pending blocker on any tab" without
+      // re-running detection. No-op when state is disabled or when
+      // the tabs map has no active entry (the reconciliation in
+      // captureState above sets activeTabId).
+      try {
+        state.updateActiveTabBlocker(blocker
+          ? {
+              kind:       blocker.kind,
+              subtype:    blocker.subtype,
+              url:        blocker.url,
+              confidence: blocker.confidence,
+            }
+          : null,
+        );
+      } catch { /* defensive — tab updates never break the inner tool */ }
+
       // v4.3 Phase 2 — stale-ref retry. Reactive: fires only after a
       // resolution-class failure on an interactive tool. One retry
       // hard cap. Safe because the resolution-class errors fire

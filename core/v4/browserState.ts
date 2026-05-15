@@ -209,6 +209,66 @@ export interface ActionResult {
   };
 }
 
+// ── Phase 4 — Multi-tab state ──────────────────────────────────────────────
+
+/**
+ * v4.3 Phase 4 — per-tab metadata captured by the observer's lazy
+ * reconciliation pass.
+ *
+ * Minimal core fields + lightweight Phase 1+3 derived state. Heavier
+ * fields are deliberately deferred:
+ *   - `purpose` (research / source / form / auth / payment) — needs
+ *     goal inference; defer to Phase 5+ with task graph.
+ *   - `dirty` (unsaved form input, active upload, modal open) — needs
+ *     DOM mutation + XHR tracking; defer.
+ *   - `pending_dialogs[]` — needs CDP supervisor; defer.
+ *
+ * Reconciliation strategy: polling via `pwSnapshotTabs()` on every
+ * `BrowserState.captureState()` call when enabled. No event listeners
+ * — the source of truth is whatever `context.pages()` returns RIGHT
+ * NOW. Closed tabs are removed from the map on the next reconciliation
+ * cycle (their Page object isn't in the bridge's enumeration anymore).
+ */
+export interface TabMetadata {
+  /** Stable identifier — bridge-assigned via WeakMap. */
+  tab_id:       string;
+  /** Current page URL. */
+  url:          string;
+  /** Current `<title>` text. */
+  title:        string;
+  /** True when this tab is the one the next tool action will target. */
+  is_active:    boolean;
+  /** Tab that opened this one (window.open / target=_blank). Null for initial tab. */
+  opener_id:    string | null;
+  /** Wallclock ms when this tab was first observed. */
+  created_ts:   number;
+  /** Wallclock ms of the most recent reconciliation that saw this tab. */
+  last_seen_ts: number;
+  /**
+   * Most recent dom_text_hash captured for this tab. Only updated when
+   * the tab is the active one (captureState uses the bridge's
+   * `_activePage` for its snapshot). Stale for background tabs — the
+   * cross-tab query "is this tab still on the same page" is best-effort.
+   */
+  last_snapshot_hash?: string;
+  /**
+   * Last detected manual blocker on this tab (from Phase 3). Captured
+   * when the tab was active and detection fired. Cleared when a later
+   * action on the same tab produces a no-blocker result. Cross-tab
+   * queries can ask "is there a pending 2FA prompt on any tab".
+   *
+   * Structural type (mirrors `BlockerSurface` in
+   * `tools/v4/browser/browserBlocker.ts`) — same lockstep contract as
+   * ActionResult.blocker above.
+   */
+  last_blocker?: {
+    kind:       'captcha' | 'login' | '2fa' | 'verification' | 'consent';
+    subtype?:   string;
+    url:        string;
+    confidence: number;
+  };
+}
+
 // ── Helpers (exported for tests + ElementLease lifecycle in Phase 2) ───────
 
 const SHORT_TEXT_HASH_CAP = 5000;
@@ -318,7 +378,27 @@ export class BrowserState {
       frame_tree_hash?: string;
       error?: string;
     }>;
+    /**
+     * v4.3 Phase 4 — multi-tab enumeration. Optional on the loader
+     * shape so older test fixtures that only stub pwSnapshotHash
+     * keep working (Phase 4 reconciliation no-ops when absent).
+     */
+    pwSnapshotTabs?: () => Promise<{
+      ok: boolean;
+      tabs?: Array<{
+        tab_id:    string;
+        url:       string;
+        title:     string;
+        is_active: boolean;
+        opener_id: string | null;
+      }>;
+      error?: string;
+    }>;
   }>;
+  /** v4.3 Phase 4 — per-tab metadata. Keyed by stable tab_id. */
+  private tabs:        Map<string, TabMetadata> = new Map();
+  /** v4.3 Phase 4 — id of the currently-focused tab. */
+  private activeTabId: string | null = null;
 
   constructor(opts: BrowserStateOptions = {}) {
     // Phase 1: strict opt-in via `=== '1'`. Phase 6 will flip the
@@ -367,7 +447,7 @@ export class BrowserState {
     this.snapshotCounter += 1;
     const url   = result.url   ?? '';
     const title = result.title ?? '';
-    return {
+    const snapshot: BrowserStateSnapshot = {
       url,
       normalized_url:  normalizeUrl(url),
       title,
@@ -376,6 +456,131 @@ export class BrowserState {
       frame_tree_hash: result.frame_tree_hash ?? '',
       ts:              this.snapshotCounter,
     };
+
+    // v4.3 Phase 4 — reconcile the tabs map. Lazy: runs after the
+    // snapshot is built so a captureState failure (bridge ok:false)
+    // skips reconciliation entirely. Never throws.
+    await this.reconcileTabs(snapshot.dom_text_hash);
+
+    return snapshot;
+  }
+
+  // ── v4.3 Phase 4 — multi-tab state API ─────────────────────────────────
+
+  /**
+   * Reconcile the tabs map against the bridge's current page set.
+   * Adds newly-observed tabs, updates `last_seen_ts` (and
+   * `last_snapshot_hash` for the active tab), removes tabs absent
+   * from the bridge's enumeration. Sets `activeTabId`.
+   *
+   * Called from `captureState()` after a successful snapshot. Public
+   * for tests + future v4.4 multi-tab dispatch flows.
+   *
+   * No-op when:
+   *   - disabled (AIDEN_BROWSER_DEPTH=0)
+   *   - bridge loader missing pwSnapshotTabs (older test fixtures)
+   *   - bridge returns ok:false (browser closed, page error)
+   *
+   * Never throws — observer must not break the inner tool execute.
+   */
+  async reconcileTabs(activeSnapshotHash?: string): Promise<void> {
+    if (!this.enabled) return;
+    if (!this.bridgeLoader) return;
+    let raw: Awaited<ReturnType<NonNullable<BrowserState['bridgeLoader']>>>;
+    try {
+      raw = await this.bridgeLoader();
+    } catch {
+      return;
+    }
+    if (!raw.pwSnapshotTabs) return;
+    let result: NonNullable<Awaited<ReturnType<NonNullable<typeof raw.pwSnapshotTabs>>>>;
+    try {
+      result = await raw.pwSnapshotTabs();
+    } catch {
+      return;
+    }
+    if (!result.ok || !result.tabs) return;
+
+    const now = Date.now();
+    const seenIds = new Set<string>();
+    let activeId: string | null = null;
+    for (const t of result.tabs) {
+      seenIds.add(t.tab_id);
+      if (t.is_active) activeId = t.tab_id;
+      const existing = this.tabs.get(t.tab_id);
+      if (existing) {
+        existing.url       = t.url;
+        existing.title     = t.title;
+        existing.is_active = t.is_active;
+        existing.opener_id = t.opener_id;
+        existing.last_seen_ts = now;
+        if (t.is_active && activeSnapshotHash) {
+          existing.last_snapshot_hash = activeSnapshotHash;
+        }
+      } else {
+        const fresh: TabMetadata = {
+          tab_id:       t.tab_id,
+          url:          t.url,
+          title:        t.title,
+          is_active:    t.is_active,
+          opener_id:    t.opener_id,
+          created_ts:   now,
+          last_seen_ts: now,
+        };
+        if (t.is_active && activeSnapshotHash) {
+          fresh.last_snapshot_hash = activeSnapshotHash;
+        }
+        this.tabs.set(t.tab_id, fresh);
+      }
+    }
+    // Drop closed tabs — anything in the map that wasn't in this
+    // reconciliation pass.
+    for (const id of [...this.tabs.keys()]) {
+      if (!seenIds.has(id)) this.tabs.delete(id);
+    }
+    this.activeTabId = activeId;
+  }
+
+  /**
+   * Update the active tab's `last_blocker` field. Called by the HOC
+   * after Phase 3 detection — pass the BlockerSurface to record, or
+   * null to clear (e.g. a later action on the same tab succeeded
+   * without blocker text). No-op when disabled or when there's no
+   * active tab.
+   */
+  updateActiveTabBlocker(
+    blocker: TabMetadata['last_blocker'] | null,
+  ): void {
+    if (!this.enabled || !this.activeTabId) return;
+    const tab = this.tabs.get(this.activeTabId);
+    if (!tab) return;
+    if (blocker === null) {
+      delete tab.last_blocker;
+    } else {
+      tab.last_blocker = blocker;
+    }
+  }
+
+  /**
+   * Read-only view of the tabs map. Returns a defensive shallow-clone
+   * array. Order is the bridge-reported order (which typically tracks
+   * Playwright's internal target ordering — first-opened first).
+   */
+  getTabs(): TabMetadata[] {
+    return [...this.tabs.values()].map((t) => ({ ...t }));
+  }
+
+  /** Convenience: the tab marked is_active, or null when none. */
+  getActiveTab(): TabMetadata | null {
+    if (!this.activeTabId) return null;
+    const tab = this.tabs.get(this.activeTabId);
+    return tab ? { ...tab } : null;
+  }
+
+  /** Lookup a tab by id. Returns null when not in the map. */
+  getTab(tabId: string): TabMetadata | null {
+    const tab = this.tabs.get(tabId);
+    return tab ? { ...tab } : null;
   }
 
   /**

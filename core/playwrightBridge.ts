@@ -408,6 +408,92 @@ export async function pwSnapshotHash(): Promise<{
   } catch (e: any) { return { ok: false, error: e.message } }
 }
 
+// ── v4.3 Phase 4 — multi-tab snapshot ─────────────────────────────────────
+//
+// Persistent context can hold many pages (target=_blank, window.open,
+// CDP popups). Aiden's tools still target `_activePage` only — Phase 4
+// is DATA-ONLY: it records what tabs exist, who opened whom, and which
+// is the active one, so v4.4+ cross-tab orchestration has a foundation.
+//
+// `_tabIdMap` is a WeakMap that assigns each observed Page a stable
+// `tab_id` (`tab-1`, `tab-2`, ...). When a Page closes, Playwright drops
+// its reference and the WeakMap entry GCs naturally — no manual cleanup.
+
+const _tabIdMap = new WeakMap<object, string>()
+let _nextTabIdCounter = 0
+
+function getOrAssignTabId(page: any): string {
+  let id = _tabIdMap.get(page)
+  if (!id) {
+    _nextTabIdCounter += 1
+    id = `tab-${_nextTabIdCounter}`
+    _tabIdMap.set(page, id)
+  }
+  return id
+}
+
+/**
+ * v4.3 Phase 4 — enumerate all pages in the persistent context and
+ * return their wire-data form. Stable `tab_id` per Page via the
+ * `_tabIdMap` WeakMap. The opener Page is looked up the same way, so
+ * `opener_id` is stable across reconciliations as long as the parent
+ * still exists.
+ *
+ * Cheap — `context.pages()` is in-process; the per-page work is one
+ * `url()` getter and one async `title()` call. Total cost scales
+ * linearly with the number of tabs; for typical sessions (1-5 tabs)
+ * it's well under 50ms.
+ *
+ * Returns `ok: false` when the browser is closed. Caller (BrowserState
+ * .reconcileTabs) treats `ok: false` as "no reconciliation this cycle".
+ */
+export async function pwSnapshotTabs(): Promise<{
+  ok:    boolean;
+  tabs?: Array<{
+    tab_id:    string;
+    url:       string;
+    title:     string;
+    is_active: boolean;
+    opener_id: string | null;
+  }>;
+  error?: string;
+}> {
+  try {
+    const ctx   = await ensureContext()
+    const pages = ctx.pages() as any[]
+    const tabs: Array<{
+      tab_id:    string;
+      url:       string;
+      title:     string;
+      is_active: boolean;
+      opener_id: string | null;
+    }> = []
+    for (const p of pages) {
+      // Skip pages already closed mid-walk (rare race).
+      if (typeof p.isClosed === 'function' && p.isClosed()) continue
+      const tab_id   = getOrAssignTabId(p)
+      const url      = (typeof p.url === 'function') ? (p.url() as string) : ''
+      // title() can throw if the page navigated mid-walk; default to empty.
+      let title = ''
+      try { title = await p.title() as string } catch { /* defensive */ }
+      // opener() returns the parent Page (or null). Same WeakMap lookup.
+      let opener_id: string | null = null
+      try {
+        const opener = typeof p.opener === 'function' ? await p.opener() : null
+        if (opener) opener_id = _tabIdMap.get(opener) ?? null
+      } catch { /* defensive */ }
+      tabs.push({
+        tab_id,
+        url,
+        title,
+        is_active: p === _activePage,
+        opener_id,
+      })
+    }
+    return { ok: true, tabs }
+  } catch (e: any) { return { ok: false, error: e.message } }
+}
+
 /** Return the URL currently loaded in the active browser page. */
 export async function pwGetUrl(): Promise<{ ok: boolean; url?: string; error?: string }> {
   try {
