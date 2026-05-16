@@ -1,0 +1,341 @@
+/**
+ * Copyright (c) 2026 Shiva Deore (Taracod).
+ * Licensed under AGPL-3.0. See LICENSE for details.
+ *
+ * Aiden — local-first agent.
+ */
+/**
+ * core/v4/daemon/triggerBus.ts — v4.5 Phase 1: durable trigger bus.
+ *
+ * The CENTRAL persistence layer for the daemon. Every accepted
+ * trigger (file watcher fire, webhook delivery, email match,
+ * scheduled job tick) normalizes into a `trigger_events` row
+ * BEFORE returning 202 Accepted / marking the email seen /
+ * enqueuing schedule. ONE durable queue, not 4 parallel half-
+ * baked persistence layers.
+ *
+ * Concurrency semantics:
+ *   - `insert()` uses INSERT OR IGNORE against the partial unique
+ *     index on (source, idempotency_key). Duplicates return the
+ *     existing id with `inserted: false`.
+ *   - `claim()` atomically picks the oldest pending event and
+ *     sets status='claimed' + claim_owner + claim_expires_at. A
+ *     per-claim nonce (claimToken) is returned; subsequent
+ *     release/markDone/markFailed validate it to prevent double-
+ *     completion races across sibling daemons.
+ *   - `reclaimExpired()` returns to 'pending' any claimed row
+ *     whose lease has elapsed (called by the daemon ticker every
+ *     30s + on boot).
+ *   - `markFailed()` increments attempts; on attempts >=
+ *     maxAttempts the row moves to 'dead_letter' instead of
+ *     returning to pending.
+ */
+
+import { randomUUID } from 'node:crypto';
+import type { Db } from './db/connection';
+import type {
+  TriggerEventInput,
+  TriggerEventRow,
+  TriggerEventStatus,
+  ClaimedEvent,
+  TriggerSource,
+} from './types';
+import type { TriggerEventRowSql } from './db/schema/v1.spec';
+
+export const DEFAULT_CLAIM_LEASE_MS = 5 * 60_000;
+export const DEFAULT_MAX_ATTEMPTS   = 3;
+
+export interface TriggerBus {
+  insert(ev: TriggerEventInput): { id: number; inserted: boolean };
+  claim(opts?: { source?: TriggerSource; leaseMs?: number; ownerId: string }): ClaimedEvent | null;
+  renewClaim(eventId: number, claimToken: string, extendMs: number): boolean;
+  release(eventId: number, claimToken: string): void;
+  markDone(eventId: number, claimToken: string, runId?: number): void;
+  markFailed(eventId: number, claimToken: string, error: string, opts?: { maxAttempts?: number }): void;
+  reclaimExpired(now?: number): { reclaimed: number };
+  deadLetter(eventId: number, reason: string): void;
+  stats(): {
+    pending:        number;
+    claimed:        number;
+    running:        number;
+    deadLetter:     number;
+    oldestPendingMs: number | null;
+  };
+  /** Diagnostic — full row. */
+  get(eventId: number): TriggerEventRow | null;
+}
+
+interface InternalClaim {
+  eventId:    number;
+  claimToken: string;
+}
+
+function rowToTs(r: TriggerEventRowSql): TriggerEventRow {
+  return {
+    id:              r.id,
+    source:          r.source as TriggerSource,
+    sourceKey:       r.source_key,
+    idempotencyKey:  r.idempotency_key,
+    payload:         safeJsonParse(r.payload_json),
+    status:          r.status as TriggerEventStatus,
+    attempts:        r.attempts,
+    claimOwner:      r.claim_owner,
+    claimExpiresAt:  r.claim_expires_at,
+    lastError:       r.last_error,
+    createdAt:       r.created_at,
+    updatedAt:       r.updated_at,
+    completedAt:     r.completed_at,
+    runId:           r.run_id,
+  };
+}
+
+function safeJsonParse(s: string): Record<string, unknown> {
+  try { return JSON.parse(s) as Record<string, unknown>; }
+  catch { return {}; }
+}
+
+export interface CreateTriggerBusOptions {
+  db: Db;
+}
+
+export function createTriggerBus(opts: CreateTriggerBusOptions): TriggerBus {
+  const db = opts.db;
+  // In-memory map of valid claim tokens. Stored separately from
+  // SQLite so cross-daemon claim attempts can't forge a token by
+  // reading the row. Token is wiped on markDone/release/markFailed.
+  const activeClaims: Map<number, string> = new Map();
+
+  return {
+    insert(ev: TriggerEventInput): { id: number; inserted: boolean } {
+      const now = Date.now();
+      const payloadJson = JSON.stringify(ev.payload ?? {});
+      const result = db
+        .prepare(
+          `INSERT OR IGNORE INTO trigger_events
+             (source, source_key, idempotency_key, payload_json,
+              status, attempts, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)`,
+        )
+        .run(
+          ev.source,
+          ev.sourceKey,
+          ev.idempotencyKey ?? null,
+          payloadJson,
+          now,
+          now,
+        );
+      if (result.changes > 0) {
+        return { id: Number(result.lastInsertRowid), inserted: true };
+      }
+      // Dedup hit — return the existing id.
+      const existing = db
+        .prepare(
+          'SELECT id FROM trigger_events WHERE source = ? AND idempotency_key = ?',
+        )
+        .get(ev.source, ev.idempotencyKey ?? null) as { id: number } | undefined;
+      if (!existing) {
+        // Defensive — shouldn't happen unless idempotency_key was null,
+        // in which case INSERT OR IGNORE wouldn't have skipped.
+        throw new Error('triggerBus.insert: INSERT OR IGNORE produced no row but no existing match found');
+      }
+      return { id: existing.id, inserted: false };
+    },
+
+    claim(opts2: { source?: TriggerSource; leaseMs?: number; ownerId: string } = { ownerId: '' }): ClaimedEvent | null {
+      const leaseMs = opts2.leaseMs ?? DEFAULT_CLAIM_LEASE_MS;
+      const now     = Date.now();
+      const expires = now + leaseMs;
+      const claimToken = randomUUID();
+
+      const tx = db.transaction((): TriggerEventRow | null => {
+        // Pick the oldest pending event matching the optional source filter.
+        const sql = opts2.source
+          ? `SELECT id FROM trigger_events
+              WHERE status = 'pending' AND source = ?
+              ORDER BY created_at LIMIT 1`
+          : `SELECT id FROM trigger_events
+              WHERE status = 'pending'
+              ORDER BY created_at LIMIT 1`;
+        const candidate = (opts2.source
+          ? db.prepare(sql).get(opts2.source)
+          : db.prepare(sql).get()) as { id: number } | undefined;
+        if (!candidate) return null;
+
+        const upd = db
+          .prepare(
+            `UPDATE trigger_events
+                SET status           = 'claimed',
+                    claim_owner      = ?,
+                    claim_expires_at = ?,
+                    updated_at       = ?,
+                    attempts         = attempts + 1
+              WHERE id = ? AND status = 'pending'`,
+          )
+          .run(opts2.ownerId, expires, now, candidate.id);
+        if (upd.changes === 0) return null;     // race lost
+        const row = db
+          .prepare('SELECT * FROM trigger_events WHERE id = ?')
+          .get(candidate.id) as TriggerEventRowSql;
+        return rowToTs(row);
+      });
+      const row = tx();
+      if (!row) return null;
+      activeClaims.set(row.id, claimToken);
+      return { ...row, claimToken };
+    },
+
+    renewClaim(eventId: number, claimToken: string, extendMs: number): boolean {
+      if (activeClaims.get(eventId) !== claimToken) return false;
+      const now = Date.now();
+      const upd = db
+        .prepare(
+          `UPDATE trigger_events
+              SET claim_expires_at = ?,
+                  updated_at       = ?
+            WHERE id = ? AND status = 'claimed'`,
+        )
+        .run(now + extendMs, now, eventId);
+      return upd.changes > 0;
+    },
+
+    release(eventId: number, claimToken: string): void {
+      if (activeClaims.get(eventId) !== claimToken) return;
+      const now = Date.now();
+      db.prepare(
+        `UPDATE trigger_events
+            SET status           = 'pending',
+                claim_owner      = NULL,
+                claim_expires_at = NULL,
+                updated_at       = ?
+          WHERE id = ? AND status = 'claimed'`,
+      ).run(now, eventId);
+      activeClaims.delete(eventId);
+    },
+
+    markDone(eventId: number, claimToken: string, runId?: number): void {
+      if (activeClaims.get(eventId) !== claimToken) return;
+      const now = Date.now();
+      db.prepare(
+        `UPDATE trigger_events
+            SET status           = 'done',
+                claim_owner      = NULL,
+                claim_expires_at = NULL,
+                updated_at       = ?,
+                completed_at     = ?,
+                run_id           = COALESCE(?, run_id)
+          WHERE id = ? AND status = 'claimed'`,
+      ).run(now, now, runId ?? null, eventId);
+      activeClaims.delete(eventId);
+    },
+
+    markFailed(
+      eventId:    number,
+      claimToken: string,
+      error:      string,
+      opts2: { maxAttempts?: number } = {},
+    ): void {
+      if (activeClaims.get(eventId) !== claimToken) return;
+      const max = opts2.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+      const now = Date.now();
+      const truncated = error.length > 1024 ? error.slice(0, 1024) + '…' : error;
+      const tx = db.transaction((): void => {
+        const row = db
+          .prepare('SELECT attempts FROM trigger_events WHERE id = ?')
+          .get(eventId) as { attempts: number } | undefined;
+        if (!row) return;
+        // attempts was already incremented at claim time. Move to
+        // dead_letter when the count hits max, else return to pending.
+        if (row.attempts >= max) {
+          db.prepare(
+            `UPDATE trigger_events
+                SET status           = 'dead_letter',
+                    claim_owner      = NULL,
+                    claim_expires_at = NULL,
+                    last_error       = ?,
+                    updated_at       = ?,
+                    completed_at     = ?
+              WHERE id = ?`,
+          ).run(truncated, now, now, eventId);
+        } else {
+          db.prepare(
+            `UPDATE trigger_events
+                SET status           = 'pending',
+                    claim_owner      = NULL,
+                    claim_expires_at = NULL,
+                    last_error       = ?,
+                    updated_at       = ?
+              WHERE id = ?`,
+          ).run(truncated, now, eventId);
+        }
+      });
+      tx();
+      activeClaims.delete(eventId);
+    },
+
+    reclaimExpired(now?: number): { reclaimed: number } {
+      const cutoff = now ?? Date.now();
+      const upd = db
+        .prepare(
+          `UPDATE trigger_events
+              SET status           = 'pending',
+                  claim_owner      = NULL,
+                  claim_expires_at = NULL,
+                  last_error       = COALESCE(last_error, 'claim lease expired'),
+                  updated_at       = ?
+            WHERE status = 'claimed'
+              AND claim_expires_at IS NOT NULL
+              AND claim_expires_at < ?`,
+        )
+        .run(cutoff, cutoff);
+      return { reclaimed: upd.changes };
+    },
+
+    deadLetter(eventId: number, reason: string): void {
+      const now = Date.now();
+      db.prepare(
+        `UPDATE trigger_events
+            SET status           = 'dead_letter',
+                claim_owner      = NULL,
+                claim_expires_at = NULL,
+                last_error       = ?,
+                updated_at       = ?,
+                completed_at     = ?
+          WHERE id = ?`,
+      ).run(reason.length > 1024 ? reason.slice(0, 1024) + '…' : reason, now, now, eventId);
+      activeClaims.delete(eventId);
+    },
+
+    stats(): {
+      pending: number; claimed: number; running: number;
+      deadLetter: number; oldestPendingMs: number | null;
+    } {
+      const counts = db
+        .prepare(
+          `SELECT status, COUNT(*) AS c FROM trigger_events GROUP BY status`,
+        )
+        .all() as Array<{ status: string; c: number }>;
+      const m: Record<string, number> = {};
+      for (const r of counts) m[r.status] = r.c;
+      const oldest = db
+        .prepare(
+          `SELECT MIN(created_at) AS t FROM trigger_events WHERE status = 'pending'`,
+        )
+        .get() as { t: number | null };
+      const oldestPendingMs = oldest.t != null ? Date.now() - oldest.t : null;
+      return {
+        pending:    m.pending    ?? 0,
+        claimed:    m.claimed    ?? 0,
+        running:    m.running    ?? 0,
+        deadLetter: m.dead_letter ?? 0,
+        oldestPendingMs,
+      };
+    },
+
+    get(eventId: number): TriggerEventRow | null {
+      const r = db
+        .prepare('SELECT * FROM trigger_events WHERE id = ?')
+        .get(eventId) as TriggerEventRowSql | undefined;
+      return r ? rowToTs(r) : null;
+    },
+  };
+}

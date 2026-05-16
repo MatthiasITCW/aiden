@@ -1,0 +1,23 @@
+[Unit]
+Description=Aiden local-first AI agent (daemon mode)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={{NODE_BIN}} {{BUNDLE_PATH}}
+WorkingDirectory={{WORKING_DIR}}
+Environment="AIDEN_DAEMON=1"
+Environment="AIDEN_PORT={{PORT}}"
+Environment="AIDEN_DAEMON_AUTO_RESTART=0"
+Restart=always
+RestartSec=60
+RestartMaxDelaySec=300
+RestartSteps=5
+RestartForceExitStatus=75
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec={{TIMEOUT_STOP_SEC}}
+ExecReload=/bin/kill -USR1 $MAINPID
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.aiden.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{NODE_BIN}}</string>
+    <string>{{BUNDLE_PATH}}</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AIDEN_DAEMON</key>
+    <string>1</string>
+    <key>AIDEN_PORT</key>
+    <string>{{PORT}}</string>
+    <key>AIDEN_DAEMON_AUTO_RESTART</key>
+    <string>0</string>
+    <key>PATH</key>
+    <string>{{USER_PATH}}</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>{{WORKING_DIR}}</string>
+  <key>StandardOutPath</key>
+  <string>{{STDOUT_PATH}}</string>
+  <key>StandardErrorPath</key>
+  <string>{{STDERR_PATH}}</string>
+</dict>
+</plist>

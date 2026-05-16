@@ -5,6 +5,21 @@
 
 // core/backgroundService.ts — PID-file-based background service manager.
 // Enables `devos stop` and `devos status` CLI commands.
+//
+// @deprecated v4.5 Phase 1: this module pre-dates the v4.5 daemon
+// foundation and uses a plain fs.writeFileSync(PID_FILE, pid) with a
+// TOCTOU race (two daemons racing to write the file both succeed,
+// then step on each other's adapters). The v4.5 replacement in
+// core/v4/daemon/runtimeLock.ts uses fs.openSync(path, 'wx') for
+// race-safe atomic create-or-fail. Existing callers continue to work
+// unchanged through v4.5 Phase 5; Phase 6 removes this module once
+// the v4.5 path is the only path.
+//
+// New daemon code should use:
+//   - acquireRuntimeLock() from core/v4/daemon/runtimeLock.ts
+//   - createInstanceTracker() from core/v4/daemon/instanceTracker.ts
+//   - performDrain() from core/v4/daemon/drain.ts
+// instead of this module.
 
 import path from 'path'
 import fs   from 'fs'
